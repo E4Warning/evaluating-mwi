@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this replication package, please cite the article and the data package."
+title: "Replication package: Evaluating the Mosquito Weather Index"
+abstract: >-
+  Analysis pipeline reproducing the figures, tables and models in
+  "Evaluating the Mosquito Weather Index: A simple tool for predicting and
+  communicating mosquito activity".
+type: software
+license: GPL-3.0-or-later
+repository-code: "https://github.com/E4Warning/evaluating-mwi"
+authors:
+  - family-names: Michaelakis
+    given-names: Antonios
+    orcid: "https://orcid.org/0000-0002-3075-5020"
+  - family-names: Balatsos
+    given-names: Georgios
+    orcid: "https://orcid.org/0000-0002-3973-068X"
+  - family-names: Karras
+    given-names: Vasileios
+  - family-names: Papachristos
+    given-names: Dimitrios
+  - family-names: Lowe
+    given-names: Rachel
+  - family-names: Bartumeus
+    given-names: Frederic
+  - family-names: Lemesios
+    given-names: Ioannis
+  - family-names: Giannakopoulos
+    given-names: Christos
+  - family-names: Lagouvardos
+    given-names: Konstantinos
+  - family-names: Palmer
+    given-names: John R. B.
+    orcid: "https://orcid.org/0000-0002-2648-7860"
+    email: john.palmer@upf.edu
