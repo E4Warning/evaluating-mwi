@@ -23,6 +23,9 @@ install.packages(c("targets", "tarchetypes", "brms", "loo", "posterior",
                    "tidybayes", "tidyverse", "readxl", "data.table", "janitor",
                    "qs", "sf", "tmap", "suncalc", "scales", "hms", "quarto"))
 
+# The MWI itself is computed by the companion package:
+pak::pak("E4Warning/mwi")   # or remotes::install_github("E4Warning/mwi")
+
 targets::tar_make()          # full pipeline (see runtime warning below)
 targets::tar_visnetwork()    # inspect the dependency graph first
 ```
@@ -69,13 +72,14 @@ targets::tar_make()
 ## Repository layout
 
 ```
-_targets.R                  pipeline definition (3,331 targets)
+_targets.R                  pipeline definition (3,333 targets)
 R/
   functions.R               data preparation, MWI construction, model fitting, plots
   mwi_pairwise_loo.R        paired LOO and leave-future-out machinery
   convergence_and_sensitivity.R
                             MCMC diagnostics; trapping-effort, Helix and
                             raw-weather sensitivity analyses
+  hobo_era5_timeseries.R    ERA5 vs on-site logger time-series figure
 analysis_report.qmd         exploratory Quarto report; also renders four of the
                             article figures, which the pipeline copies into
                             outputs/figures
@@ -121,10 +125,12 @@ Key result targets, readable with `targets::tar_read()`:
 
 ## Notes and caveats
 
-- **The MWI response functions are duplicated.** `make_FT()`, `make_FH()` and
-  `make_FW()` in `R/functions.R` predate the [`mwi`](https://github.com/E4Warning/mwi)
-  package and are kept here so that the cached model fits remain valid. The
-  package is the canonical implementation; the two agree at every breakpoint.
+- **The MWI computation lives in the [`mwi`](https://github.com/E4Warning/mwi)
+  package.** `make_FT()`, `make_FH()`, `make_FW()` and the other helpers in
+  `R/functions.R` are thin wrappers that delegate to it, retained so the names
+  used throughout the pipeline keep working. The package's test suite includes
+  314 hourly observations from this study with the index values this pipeline
+  produced, so the two cannot silently drift apart.
 - **Order of operations matters.** MWI is a non-linear function of its three
   inputs, so it is computed hourly and only then aggregated to daily values.
   Computing it from daily weather summaries instead gives a substantially

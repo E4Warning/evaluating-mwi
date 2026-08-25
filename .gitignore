@@ -26,7 +26,7 @@ outputs/tables/*
 !outputs/**/.gitkeep
 
 # --- Raw ERA5 GRIB downloads ---------------------------------------------
-# ~30 GB when complete; retrieved by scripts/a000_get_era5_data.py from the
+# ~32 MB; retrieved by scripts/a000_get_era5_data.py from the
 # Copernicus CDS. The wrangled csv.gz extracts in data/proc/ ARE tracked.
 data/external_data/
 

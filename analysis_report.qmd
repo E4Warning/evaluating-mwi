@@ -1,0 +1,1303 @@
+---
+title: "Evaluating the Mosquito Weather Index Using BG Sentinel Traps in Greece"
+subtitle: "Detailed Statistical Analysis - Working Document"
+date-modified: now
+author: 
+  - name: John Palmer
+    orcid: 0000-0002-2648-7860
+    email: john.palmer@upf.edu
+    affiliations:
+      - name: Universitat Pompeu Fabra
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    toc-expand: false 
+    page-layout: full
+execute: 
+  echo: false
+  cache: true
+---
+
+
+```{r}
+#| label: load
+#| message: false
+targets::tar_load(
+  c(model_names,
+    combined_loos_albo,
+    combined_loos_cx,
+    combined_loos_total,
+    mwi_pairwise_loo_albo,
+    mwi_pairwise_loo_cx,
+    mwi_pairwise_loo_total,
+    mwi_pairwise_holdout_albo,
+    mwi_pairwise_holdout_cx,
+    mwi_pairwise_holdout_total,
+    fhft_pairwise_loo_albo,
+    fhft_pairwise_loo_cx,
+    fhft_pairwise_loo_total,
+    fhft_pairwise_holdout_albo,
+    fhft_pairwise_holdout_cx,
+    fhft_pairwise_holdout_total,
+    trap_data,
+    trap_location_data,
+    weather_era5_hourly_data,
+    era5_daylight_daily,
+    era5_albotime_daily,
+    weather_era5_hourly_sundata,
+    era5_daily_data,
+    helix_data,
+    hobos_data,
+    hobos_sundata,
+    prepared_data,
+    lfo_results,
+    this_session_info
+    )
+)
+
+library(tidyverse)
+library(brms)
+library(BayesPostEst)
+library(summarytools)
+library(kableExtra)
+library(sf)
+library(leaflet)
+library(tidybayes)
+
+source("R/functions.R")
+source("R/mwi_pairwise_loo.R")
+
+st_options(plain.ascii = FALSE,       # This is very handy in all Rmd documents
+            style = "rmarkdown",        # This too
+            footnote = NA,             # Avoids footnotes which would clutter the results
+            subtitle.emphasis = FALSE,  # This is a setting to experiment with - according to
+            dfSummary.varnumbers = FALSE,
+            dfSummary.valid.col = FALSE
+           )   
+
+```
+
+## Summary
+
+This report describes Bayesian statistical analysis of the mosquito data collected by BPI from 6 BG Sentinel traps in Moschato-Tavros Municipality, Attica, during 2018 and 2019. This is intended as a working document to guide article preparation. It starts with a summary of the main findings, including figures that could be incorporated directly into the article. It then includes a detailed description of the data, modelling approach, model output, and other information necessary to replicate the analysis.
+
+The main objectives of this analysis are to evaluate the performance of the Mosquito Weather Index (MWI) in predicting mosquito activity. The MWI was developed as a real-time alert system for the general public in Greece, tranforming current and forecasted temperature, humidity, and windspeed into an indicator of potential mosquito biting risk. In this study, we primarly test: 
+
+- how well MWI predicts BG trap counts of _Ae. albopictus_ and _Cx. pipiens_ females.
+
+
+To understand the analysis and properly interpret the results it is important to remember that these BG trap counts are only a very imperfect proxy for the instantaneous mosquito activity levels that the MWI was designed to predict. We therefore also explore:
+
+- whether the MWI can and should be modified for use with BG traps.
+
+
+### Thing left to do
+
+There are a number of things still left to do with this analysis/report:
+
+- Use consistent model and variable names (or check them for consistency). In the main findings and associated figures I have tried to use understandible model and variable names, which could be used in an published article. But throughout the rest of the report I am generally using the same names as I have in the code. This helps with linking models and variables to the underlying code but would not be as clear for publication.
+- minor tweaks to plot aesthetics
+- additional model diagnostics
+- descriptive statistics
+- add the main results on comparing raw weather to MWI and potentially modifying MWI for BGs. (But note that this last part is not straightforward if we would be calculating MWI at hourly scale and yet the raw weather models are aggregated by day.)
+- include Culex and both species models in main results section.
+
+## Main Results
+
+This section presents the focused set of results that tell the main story; the full model grid, alternative specifications, model diagnostics, and the combined-species and wind-free (FHFT) analyses are kept in the appendix. Unless noted, results use the zero-inflated negative binomial (ZINB) model with the daily **maximum** MWI aggregated over the full **24-hour** window — the primary specification, whose family, window, and aggregation choices are justified in the appendix — and we treat _Ae. albopictus_ and _Cx. pipiens_ separately. The combined ("total") counts are left to the appendix: the two species have different seasonal dynamics, so their sum is neither a single biological signal nor a complete "all-mosquito" measure.
+
+The story has three parts:
+
+1. **MWI is clearly associated with BG counts and predicts them well on its own.** For both species the MWI coefficient is credibly positive in the count component; in the zero-inflation component it is credibly negative for both species at the 90% level — strongly for _Ae. albopictus_, and more weakly for _Cx. pipiens_, where it is negative with about 96% posterior probability and a 90% credible interval that excludes zero (though the wider 95% interval would include it) (higher MWI → fewer structural zeros). Either way, adding MWI to a null model greatly improves out-of-sample prediction. As a simple, standalone, weather-driven index — its design purpose — MWI is genuinely informative.
+2. **But MWI does not out-predict a seasonal trend.** Most of MWI's predictive information overlaps a smooth seasonal pattern. Added on top of a day-of-year climatology (a cyclic spline), MWI helps little for _Cx. pipiens_ and slightly _worsens_ prediction for _Ae. albopictus_; in genuine month-ahead forecasting its incremental value is small and confined to the warm season.
+3. **Interpretation.** MWI's only information beyond season is short-term weather _departures_ from the seasonal norm — an unusually cool, dry, or calm spell. For a public-facing activity index that is exactly the useful signal, and it works. For statistical modelling that already represents seasonality, MWI adds little and is not needed.
+
+The wind component of MWI contributes essentially nothing to BG-count prediction: a humidity-times-temperature index (FHFT) predicts as well (appendix). We nonetheless keep MWI itself as the focus here, since it is the published index under test.
+
+### MWI is associated with trap counts
+
+@fig-mwi-ce shows the expected BG trap count as a function of MWI for each species, from the primary ZINB model, with trapping effort at its median and trap random intercepts ignored. The two species are stacked as facets sharing a common MWI axis but with independent count scales, since _Ae. albopictus_ reaches much higher counts than _Cx. pipiens_. The relationship is strongly increasing for both species (these curves use `posterior_epred`, so they include the zero-inflation component — i.e. the expected observed count).
+
+```{r}
+#| label: fig-mwi-ce
+#| message: false
+#| fig-cap: "Expected BG trap count as a function of MWI (24-hour daily maximum), from the primary ZINB model, for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Shaded bands are 90% credible intervals. Trapping effort at its median; trap random intercepts ignored. Note the independent count (y) scales."
+
+m_albo <- targets::tar_read(M_MWI_max_ZINB_albo)
+m_cx   <- targets::tar_read(M_MWI_max_ZINB_cx)
+
+combined_ce_plot(
+  list(`Ae. albopictus` = m_albo, `Cx. pipiens` = m_cx),
+  "mean_era5_mwi_max",
+  xlab = "MWI (24-h daily maximum)",
+  ylab = "Expected count"
+) +
+  theme_bw() +
+  theme(strip.text = element_text(face = "italic"))
+```
+
+The MWI coefficient is credibly positive in the count component for both species. In the zero-inflation component it is credibly negative for both species at the 90% level: strongly for _Ae. albopictus_, and for _Cx. pipiens_ more weakly — about 96% of the posterior mass lies below zero, and the 90% credible interval excludes zero, though the wider 95% interval would include it. @tbl-mwi-coefs reports the full set of coefficient estimates with 90% credible intervals, and @fig-mwi-coefs-count and @fig-mwi-coefs-zi show the corresponding posterior distributions of every population-level coefficient in the count and zero-inflation components; the robustness of the MWI coefficient across MWI windows and aggregations is documented in the appendix.
+
+```{r}
+#| label: fig-mwi-coefs-count
+#| message: false
+#| fig-cap: "Posterior distributions of the count-component (log-mean) coefficients of the primary ZINB models for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Point intervals show the posterior median with 50% and 90% credible intervals; the dashed line marks zero."
+
+mwi_coef_posterior_plot(
+  list(`Ae. albopictus` = m_albo, `Cx. pipiens` = m_cx),
+  component = "count"
+) +
+  theme_bw() +
+  theme(strip.text = element_text(face = "italic"))
+```
+
+```{r}
+#| label: fig-mwi-coefs-zi
+#| message: false
+#| fig-cap: "Posterior distributions of the zero-inflation-component (logit) coefficients of the primary ZINB models for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Point intervals show the posterior median with 50% and 90% credible intervals; the dashed line marks zero. A negative MWI coefficient means higher MWI lowers the probability of a structural zero."
+
+mwi_coef_posterior_plot(
+  list(`Ae. albopictus` = m_albo, `Cx. pipiens` = m_cx),
+  component = "zi"
+) +
+  theme_bw() +
+  theme(strip.text = element_text(face = "italic"))
+```
+
+@tbl-mwi-coefs gives the posterior median and 90% credible interval for every coefficient in both primary models, on the model's native link scale (log for the count component, logit for the zero-inflation component). The final column is the posterior probability that the coefficient is negative, which makes the direction of each effect explicit: it is essentially 0 for the count-component MWI coefficient (a firmly positive effect) and essentially 1 for the _Ae. albopictus_ zero-inflation MWI coefficient, but only about 0.96 for the _Cx. pipiens_ zero-inflation MWI coefficient, consistent with its 90% credible interval excluding zero only narrowly (the 95% interval still crosses zero).
+
+```{r}
+#| label: tbl-mwi-coefs
+#| message: false
+
+zinb_coef_table(list(`Ae. albopictus` = m_albo, `Cx. pipiens` = m_cx)) %>%
+  transmute(
+    Species = species,
+    Component = component,
+    Term = term,
+    Estimate = sprintf("%.2f", estimate),
+    `90% CrI` = sprintf("(%.2f, %.2f)", lower, upper),
+    `P(coef < 0)` = sprintf("%.2f", p_neg)
+  ) %>%
+  kableExtra::kbl(format = "html", caption = "Posterior median estimates, 90% credible intervals, and posterior probability of a negative effect for every coefficient in the primary ZINB models (24-h maximum MWI). Count-component estimates are on the log scale; zero-inflation-component estimates are on the logit scale. {#tbl-mwi-coefs}") %>%
+  kableExtra::collapse_rows(columns = 1:2, valign = "top")
+```
+
+On the count scale, @tbl-mwi-effect-size summarises the effect: moving from a low (10th percentile) to a high (90th percentile) MWI value raises the expected count substantially for both species.
+
+```{r}
+#| label: tbl-mwi-effect-size
+#| message: false
+
+bind_rows(
+  summarize_index_effect_size(m_albo) %>% mutate(Species = "Ae. albopictus"),
+  summarize_index_effect_size(m_cx)   %>% mutate(Species = "Cx. pipiens")
+) %>%
+  transmute(
+    Species,
+    `Count at low MWI` = round(count_low, 2),
+    `Count at high MWI` = round(count_high, 1),
+    `Increase (90% CI)` = sprintf("%.1f (%.1f, %.1f)", diff_med, diff_lo, diff_hi)
+  ) %>%
+  kableExtra::kbl(format = "html", caption = "Expected BG count at low (10th percentile) and high (90th percentile) MWI, primary ZINB model. {#tbl-mwi-effect-size}")
+```
+
+### MWI improves on a null model — but not on seasonality
+
+@tbl-mwi-vs-null is the crux of the paper. The left column is the gain in leave-one-out predictive accuracy (ΔELPD, with standard error) from adding MWI to a **null** model (intercept, trapping effort, and trap random effects only). The right column is the gain from adding MWI to a model that **already contains a smooth seasonal term**. Adding MWI to the null model helps enormously for both species. Adding MWI on top of seasonality helps little for _Cx. pipiens_ and is slightly negative for _Ae. albopictus_. A credibly positive coefficient alongside a near-zero ΔELPD-over-season is not a contradiction: because weather is itself seasonal, once day-of-year is in the model the index is largely redundant (appendix).
+
+```{r}
+#| label: tbl-mwi-vs-null
+#| message: false
+
+bind_rows(mwi_pairwise_loo_albo, mwi_pairwise_loo_cx) %>%
+  filter(family == "zero_inflated_negbinomial", window == "24h", aggregation == "max") %>%
+  mutate(
+    Species = recode(outcome, n_albo = "Ae. albopictus", n_cx = "Cx. pipiens"),
+    comparison = if_else(seasonality == "No", "vs null", "vs season"),
+    cell = sprintf("%.1f (%.1f)", delta_elpd, se_diff)
+  ) %>%
+  select(Species, comparison, cell) %>%
+  tidyr::pivot_wider(names_from = comparison, values_from = cell) %>%
+  transmute(
+    Species,
+    `ΔELPD: MWI added to null (SE)` = `vs null`,
+    `ΔELPD: MWI added to seasonal model (SE)` = `vs season`
+  ) %>%
+  kableExtra::kbl(format = "html", caption = "Improvement in leave-one-out predictive accuracy from adding MWI, relative to a null model and relative to a model that already includes seasonality (primary ZINB, 24-h max). {#tbl-mwi-vs-null}")
+```
+
+```{r}
+#| label: fig-mwi-vs-null
+#| message: false
+#| fig-height: 4
+#| fig-width: 7
+#| fig-cap: "Improvement in leave-one-out predictive accuracy (ΔELPD) from adding MWI to a null model and to a model that already contains a smooth seasonal term, for the primary ZINB specification (24-h maximum). Bars are coloured by species and error bars are 90% intervals (ΔELPD ± 1.645·SE). Adding MWI to the null model helps substantially for both species, but adds little once seasonality is present."
+
+plot_mwi_vs_null_loo(mwi_pairwise_loo_albo, mwi_pairwise_loo_cx)
+```
+
+### Genuine forecasting: does MWI help predict the future?
+
+The LOO comparison above is retrospective — every model is trained on the whole study period. @fig-mwi-lfo is the genuine forecast test: at each month the models are refit on past data only and used to forecast the next month (assuming the weather itself is known), comparing MWI plus a cyclic-spline seasonal trend against the seasonal trend alone. Positive bars are months where MWI improves the forecast. For _Ae. albopictus_ the net effect across the year is slightly negative; for _Cx. pipiens_ it is small and positive, concentrated in the warm season. Once seasonality is modelled, MWI's forecasting value is small.
+
+```{r}
+#| label: fig-mwi-lfo
+#| message: false
+#| fig-cap: "Monthly leave-future-out forecast skill: forward ΔELPD (MWI + cyclic season minus cyclic season only), refitting on past data only and forecasting the next month with observed weather. Error bars are ±1 SE."
+
+lfo_results %>%
+  filter(outcome %in% c("n_albo", "n_cx")) %>%
+  mutate(Species = recode(outcome, n_albo = "Ae. albopictus", n_cx = "Cx. pipiens")) %>%
+  ggplot(aes(x = horizon_end, y = delta_elpd)) +
+  geom_hline(yintercept = 0, color = "grey55") +
+  geom_col(aes(fill = delta_elpd > 0)) +
+  geom_errorbar(aes(ymin = delta_elpd - se_diff, ymax = delta_elpd + se_diff), width = 8, color = "grey30") +
+  facet_wrap(~ Species, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "#d7301f"), guide = "none") +
+  labs(x = "Forecast month (trained on all prior data)", y = "Forward ΔELPD (MWI + season − season only)") +
+  theme_bw()
+```
+
+### What this means
+
+MWI does what it was designed to do: turn a weather forecast into a simple, public-facing signal of mosquito activity, and that signal is real and substantial relative to having no information. But for research-grade modelling, a seasonal climatology predicts BG counts as well or better, and MWI's only added value is in flagging short-term departures from the seasonal norm, which is modest and concentrated in the peak season. We therefore retain MWI as the focus of this paper — it is the index under test — while noting it is not the better choice when the goal is the most accurate possible count model.
+
+A fuller set of diagnostics for the primary _Ae. albopictus_ model (Bayes R² across specifications, and observed-versus-predicted counts over time) is in the appendix, along with the complete per-model results for every species, family, window, and aggregation.
+
+## Data
+
+This section describes the main data sources used in the analysis -- BG trap counts and weather data -- and the way in which these are merged prior to modelling.
+
+### BG Traps
+
+The BG trap data is straightforward and I have done minimal processing to it prior to merging it with the weather data. Mainly I have simply loaded the data from the Excel workbook provided by BPI, cleaned variable names, converted date strings to date class including time zone, and reshaped. Trap locations are shown in @fig-trap-location-map. Summaries of the _Ae. albopictus_ and _Cx. pipiens_ counts are shown below in @tbl-data-descriptives. 
+
+```{r}
+#| label: fig-trap-location-map
+#| fig-cap: "Locations of the 6 BG traps used in this study."
+
+trap_location_data %>% st_as_sf(coords = c("dlon", "dlat"), crs = 4326) %>% leaflet() %>% addProviderTiles("Esri.WorldImagery") %>% addCircleMarkers(color = "red", radius = 10, popup = ~`trap name`, fill = TRUE, fillColor = "yellow", opacity = 1, fillOpacity = 1, stroke = FALSE) 
+
+
+```
+
+I also calculated sunrise and sunset times for each of the traps on each of the dates in the study (every day from the date on which the traps were first set to the date on which they were last checked). I did this using the getSunlightTimes function from the suncalc package:
+
+ Thieurmel B, Elmarhraoui A (2022).
+  _suncalc: Compute Sun Position, Sunlight
+  Phases, Moon Position and Lunar Phase_. R
+  package version 0.5.1,
+  <https://CRAN.R-project.org/package=suncalc>.
+
+I use these calculations later when mering the weather data to calculate MWI for only daylight hours and for only the 2-hour periods following sunrise and prior to sunset.
+
+### Weather
+
+We have explored several sources of weather data for this analysis, including the ERA5-Land hourly data set from the Copernicus Climate Change Service (ERA5-hourly), daily weather station data for Athens from the Hellenic Data Service (Helix-daily), and 30-minute readings from temperature and humidity sensors placed near each of 4 of the BG traps (Hobo-30min). Of these, the ERA5-hourly data appears best suited to our analysis because (a) it provides complete data for the three weather variables needed in the MWI for the entire study period, and (b) its time-resolution is small enough to avoid the problem of aggregation that arises with daily data. The Helix-daily data includes all of the MWI variables and covers the entire study period, but its daily resolution is problematic: Because the MWI is a non-linear function, using daily mean, minimum, or maximum values for the weather variables results in very different MWI values than calculating the index at an hourly scale and then aggregating the index by day. The Hobo-30 minute data does not have that problem -- and its temporal resolution is even better than that of the ERA5 data, but it contains a large number of missing values. Although these values could potentially be imputed from the ERA5 data, this would make it difficult to conduct a meaningful comparison. As a result, although we have merged all 3 of these weather data sources with the BG trap data we ultimately use only the ERA5-hourly data in the analysis.
+
+#### ERA5-hourly
+
+The ERA5-hourly data comes from the Copernicus Climate Change Service and should be cited as:
+
+Muñoz Sabater, J. (2019): ERA5-Land hourly data from 1950 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). DOI: 10.24381/cds.e2161bac (Accessed on 13-02-2025)
+
+I downloaded this on 13 February 2025 and I did initial processing outside of the targets pipeline using the python scripts scripts/a000_get_era5_data.py and scripts/a000_wrangle_era5_data.py. The first script requires setting up the CDS API following the instructions at:
+
+https://confluence.ecmwf.int/display/CKB/How+to+install+and+use+CDS+API+on+macOS
+
+The second python script requires first installing the eccodes and cfgrib python libraries (as well as xarray, pandas, and datetime). Python and library versions are shown in the appendix. (Reminder to self: I am running this in my conda py313 environment: conda activate py313).
+
+I downloaded the following variables from the ERA5-hourly data set: 2m_dewpoint_temperature (d2m), 2m_temperature (t2m), 10m_u_component_of_wind (u10), 10m_v_component_of_wind (v10), surface_pressure (sp), and total_precipitation (sp). I calculated temperatures in celsus (temp_c and dewpoint_2m_c) from the t2m and d2m variables by subtracting 273.15 from each (see my K2C function in R/functions.R). I then calculated relative humidity from dewpoint_2m_c and temp_c using the Magnus approximation shown in https://web.archive.org/web/20200212215746im_/https://www.vaisala.com/en/system/files?file=documents/Humidity_Conversion_Formulas_B210973EN.pdf implemented in my rh_magnus function in R/functions.R. Note that this should be valid for temperatures between -20 and 50 celsius (which is our range here). The function is as follows:
+
+```r
+
+rh_magnus = function(m = 7.591398, tn = 240.726, dewpoint_2m_c, temp_2m_c){
+  100*10^(m*( (dewpoint_2m_c/(dewpoint_2m_c + tn))  - (temp_2m_c/(temp_2m_c+tn)) ))
+}
+
+```
+
+I calculated windspeed from u10 anb v10 using my windspeed_from_components function in R/function.R as follows:
+
+```r
+
+windspeed_from_components = function(u, v){
+  sqrt(u^2 + v^2)
+}
+
+```
+
+I calculated the temperature, humidity, and windspeed components of MWI (FT, FH, and FW respectively) using the following functions, which are based on the calculations provided by Antonios:
+
+```r
+
+# relative humidity should be given as percentage from 0 to 100
+make_FH = function(RH_perc){
+  case_when(RH_perc < 40~0, RH_perc >95~0, (RH_perc >=40 & RH_perc <= 95)~((RH_perc/55)-(40/55)) )
+}
+
+# temperature should be in celsius
+make_FT = function(temp_c){
+  case_when(temp_c<=15~0, temp_c>30~0, (temp_c>15 & temp_c <=20)~ (.2*temp_c)-3, (temp_c>20 & temp_c<=25)~1, (temp_c>25 & temp_c <= 30)~ (-.2*temp_c)+6)
+}
+
+make_FW = function(wind_speed, units = "kmph"){
+  this_wind_speed = wind_speed  
+  if(units == "mps"){
+    this_wind_speed = wind_speed*60*60/1000
+  }
+  as.integer(this_wind_speed <= (6*3.6))
+}
+
+```
+
+Finally, I calculated MWI by multiplying the three components together (again, according to Antonios's calculation).
+
+The hourly values of each of these raw and transformed variables is shown in @fig-era5-hourly.
+
+```{r}
+#| label: fig-era5-hourly
+#| fig-height: 20
+#| fig-width: 8
+#| fig-cap: "Hourly values of raw and processed variables in the ERA5-hourly data."
+
+weather_era5_hourly_data %>% pivot_longer(cols = -valid_time, names_to = "variable", values_to = "value") %>% ggplot(aes(x = valid_time, y = value)) + geom_line() + facet_grid(variable~., scale = "free")
+
+```
+
+From these hourly values, I then calculate daily means, maximums, and minimums of each variable. Importantly, although I calculate these daily aggregated values for the raw weather variables and the MWI components, and I never calculate MWI from the aggregated variables. Instead, I always calculate MWI at the hourly level and then aggregate. Since the components are all non-linear functions, this distinction is important and results are vary different if MWI is calulated from the aggregated variables.
+
+The daily aggregates are shown in @fig-era5-daily.
+
+```{r}
+#| label: fig-era5-daily
+#| fig-height: 20
+#| fig-width: 10
+#| fig-cap: "Daily mean, maximum and mimimum values of raw and processed variables in the ERA5-hourly data."
+
+weather_era5_hourly_data %>% mutate(date = as_date(valid_time)) %>% pivot_longer(cols = -c(date, valid_time), names_to = "variable", values_to = "value") %>% group_by(date, variable) %>% summarise(sum = sum(value), mean = mean(value), min = min(value), max = max(value), .groups = "drop") %>% pivot_longer(cols = -c(date, variable)) %>% filter(name != "sum") %>% ggplot(aes(x = date, y = value)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+I calculate two additional daily aggregates based on the sunrise and sunset hours caculated for the traps above:
+
+- means, maximums, and minimums for only daylight hours,
+- means, maximums, and minimums for only the 2 hours after sunrise and before sunset. I refer to these throughout the code and in this report as "albotime". Note that the decision to use 2 hours is open to reconsideration. It is set at the beginning of the R/functions.R file and could easily be changed.
+
+These are shown in @fig-era5-albotime-daily and @fig-era5-daylight-daily.
+
+```{r}
+#| label: fig-era5-albotime-daily
+#| fig-height: 20
+#| fig-width: 10
+#| fig-cap: "Daily mean, maximum and mimimum values of raw and processed variables in the ERA5-hourly data calculated for the 2 hours after sunsrise and before sunset."
+
+weather_era5_hourly_sundata %>% filter(albotime) %>% dplyr::select(-c(albotime, daylight, sunrise, sunset, time_since_sunrise, time_to_sunset)) %>% pivot_longer(cols = -c(date, valid_time), names_to = "variable", values_to = "value") %>% group_by(date, variable) %>% summarise(sum = sum(value), mean = mean(value), min = min(value), max = max(value), .groups = "drop") %>% pivot_longer(cols = -c(date, variable)) %>% filter(name != "sum") %>% ggplot(aes(x = date, y = value)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+
+```{r}
+#| label: fig-era5-daylight-daily
+#| fig-height: 20
+#| fig-width: 10
+#| fig-cap: "Daily mean, maximum and mimimum values of raw and processed variables in the ERA5-hourly data calculated for daylight hours only."
+
+
+weather_era5_hourly_sundata %>% filter(daylight) %>% dplyr::select(-c(albotime, daylight, sunrise, sunset, time_since_sunrise, time_to_sunset)) %>% pivot_longer(cols = -c(date, valid_time), names_to = "variable", values_to = "value") %>% group_by(date, variable) %>% summarise(sum = sum(value), mean = mean(value), min = min(value), max = max(value), .groups = "drop") %>% pivot_longer(cols = -c(date, variable)) %>% filter(name != "sum") %>% ggplot(aes(x = date, y = value)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+TODO: Add more plots comparing the daily, albotime, and daytime values (e.g. scatter plots).
+
+#### Helix-daily
+
+I downloaded the Helix-daily data from the following URL:
+
+https://data.hellenicdataservice.gr/dataset/d3b0d446-aaba-49a8-acce-e7c6f6f5d3b5/resource/a7c024b3-8606-4f08-93e2-2042f5bd6748/download/athens.csv 
+
+Information on this dataset is available at:
+
+https://data.hellenicdataservice.gr/dataset/66e1c19a-7b0e-456f-b465-b301a1130e3f
+
+Since this data is given at the daily time scale, it is not possible to calculate the albotime and daytime version of these values. Moreover, with this data, we are forced to calculate the MWI components and MWI using the aggregated values, which has important consequences (as noted above).
+
+The helix data includes daily means, minimums, and maximums of ambient air temperature (°C), relative humidity (%), atmospheric pressure (hPa), rainfall (mm), wind speed (km/h) and direction. For this analysis I selected (and abbreviated for variable names) temperature (temp), relative humidity (rh), atmospheric pressure (ap), rainfall (rain), and windspeed (windspeed). I then calculated the MWI components and MWI using the same calculations shown for the ERA5-hourly data, but this time using the maximum daily values. @fig-helix-daily plots all of the daily values.
+
+```{r}
+#| label: fig-helix-daily
+#| fig-height: 30
+#| fig-width: 10
+#| fig-cap: "Daily values of the Helix-daily data."
+
+helix_data %>% pivot_longer(-date) %>% ggplot(aes(x=date, y=value)) + geom_line() + facet_grid(name~., scale = "free")
+
+```
+
+#### Hobo-30min
+
+The Hobo-30min data was provided by BPI and it contains 30-minute readings of relative humidity as a percentage (RH_perc) and temperature in Celsius (temp_c) from sensors placed near 4 of the traps (BG 2, BG 3, BG 4, and BG 5). After minimal processing to combine these and set variable classes, @fig-hobos-30min shows the raw values for each of these variables.
+
+```{r}
+#| label: fig-hobos-30min
+#| fig-height: 10
+#| fig-width: 10
+#| fig-cap: "30 minute values of Hobo-30min data."
+
+hobos_data %>% pivot_longer(-c(date_time, date, time, trap_name)) %>% ggplot(aes(x=date_time, y=value)) + geom_line() + facet_grid(name~trap_name, scale = "free")
+
+```
+
+I used RH_perc and temp_c to contruct the FH and FT components of MWI using the same formula as with the ERA5-hourly data. Since the Hobo-30min data does not include windspeed, I add the ERA5-hourly windspeed data in order to construct the final MWI value. To do this, I first round the hobo times to the nearest hour (since we do not have ERA5 data at the 30 minute scale) and then merge the ERA5-hourly data. The results, including the final MWI value are shown in @fig-hobos-mwi-30min.
+
+```{r}
+#| label: fig-hobos-mwi-30min
+#| fig-height: 15
+#| fig-width: 10
+#| fig-cap: "30-minute values of Hobo-30min data combined with ERA5-hourly data for windspeed."
+
+hobos_sundata %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly_data %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% ggplot(aes(x=date_time, y=value)) + geom_line() + facet_grid(variable~trap_name, scale = "free")
+
+```
+
+Finally, I aggregate these values by day, using the same approach as with the ERA5-hourly data. This is shown in @fig-hobos-daily
+
+```{r}
+#| label: fig-hobos-daily
+#| fig-height: 15
+#| fig-width: 10
+#| fig-cap: "Daily mean, minimum, and maximum values of the Hobo-30min data."
+
+hobos_sundata %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly_data %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max(value, na.rm=TRUE), min = min(value, na.rm=TRUE), mean = min(value, na.rm=TRUE), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% dplyr::select(-sum) %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% ggplot(aes(x=date, y=value, color=trap_name)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+For completeness, I also do these calculations for only the 2 hours after sunrise and before sunset (@fig-hobos-daily-albotime) and for daylight hours (@fig-hobos-daily-daylight)
+
+```{r}
+#| label: fig-hobos-daily-albotime
+#| fig-height: 15
+#| fig-width: 10
+#| fig-cap: "Daily mean, minimum, and maximum values of the Hobo-30min data calculated for the 2 hours after sunrise and before sunset."
+
+hobos_sundata %>% filter(albotime) %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly_data %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max(value, na.rm=TRUE), min = min(value, na.rm=TRUE), mean = min(value, na.rm=TRUE), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% dplyr::select(-sum) %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% ggplot(aes(x=date, y=value, color=trap_name)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+
+```{r}
+#| label: fig-hobos-daily-daylight
+#| fig-height: 15
+#| fig-width: 10
+#| fig-cap: "Daily mean, minimum, and maximum values of the Hobo-30min data calculated during daylight hours."
+
+hobos_sundata %>% filter(daylight) %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly_data %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max(value, na.rm=TRUE), min = min(value, na.rm=TRUE), mean = min(value, na.rm=TRUE), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% dplyr::select(-sum) %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% ggplot(aes(x=date, y=value, color=trap_name)) + geom_line() + facet_grid(variable~name, scale = "free")
+
+```
+
+Notice that there appear to be some anomolous (and presumably erroneous) relative humidity readings of 0 from the Hobo on trap BG 2. Apart from that, we see some variation between traps, but within plausible bounds. (There is no variation between traps in windspeed because this comes from the ERA5-hourly data, so it is necessarily the same for all traps.)
+
+
+### Merging Weather and Traps
+
+I merged the weather data with the BG trap data using the following approach for each trap-trapping-period:
+
+1. Take the daily weather data (from each of the tree sources) for each day in the trapping period.
+
+2. Take the mean, maximum, minimum, and sum of these values.
+
+I merged the results of all four of these calculations for each of the weather variables with the BG trap data, such that for each trap-trapping period we have mean, max, min, and sums of each weather variable (including each daily aggregation operator) over the trapping period. I name the resulting variables to indicate the type of aggregation function used, with the first function in the name indicating the trap period operation, and the second indicating the daily operation. For example, mean_FH_max_helix represents the mean FH value over the trapping period of the maximum daily FH. 
+
+After initially exploring the data, I concluded that the minimum and maximum values for trapping periods are not really useful. The sum and mean seem more useful. The sum, however, combines information on weather suitibility with information on trapping effort (how long the trap was set for) in a way that is more difficult to disentangle later than if we simply use the mean over the trapping period and then control for trappping effort separately. We could think this through more but for now all models are fit using the trapping period means.
+
+## Modelling Approach
+
+I fit a total of `{r} length(unlist(model_names))` different count models by combining the following different specification elements:
+
+- 3 different outcome counts: _Ae. albopictus_ females, _Cx. pipiens_ females, and total females of the two species combined.
+
+- 9 different specifications of weather variables in the right-hand side of the model:
+  - mean_era5_mwi_mean 
+  - mean_era5_albotime_mwi_mean 
+  - mean_era5_daylight_mwi_mean
+  - mean_era5_relative_humidity_mean + mean_era5_temp_c_mean + mean_era5_windspeed_kmph_mean 
+  - mean_era5_albotime_relative_humidity_mean + mean_era5_albotime_temp_c_mean + mean_era5_albotime_windspeed_kmph_mean 
+  -mean_era5_daylight_relative_humidity_mean + mean_era5_daylight_temp_c_mean + mean_era5_daylight_windspeed_kmph_mean 
+  - poly(mean_era5_relative_humidity_mean, 2) + poly(mean_era5_temp_c_mean, 2) + poly(mean_era5_windspeed_kmph_mean, 2)
+  - poly(mean_era5_albotime_relative_humidity_mean, 2) + poly(mean_era5_albotime_temp_c_mean, 2) + poly(mean_era5_albotime_windspeed_kmph_mean, 2) 
+  - poly(mean_era5_daylight_relative_humidity_mean, 2) + poly(mean_era5_daylight_temp_c_mean, 2) + poly(mean_era5_daylight_windspeed_kmph_mean, 2) 
+  
+- these same 9 specifications but using the mean and maximum values for the aggregation function.  
+  
+- inclusion or not of a second-degree polynomial term for seasonality (day of year)
+
+- 3 different functions for the model stochastic components:
+  - Poisson
+  - Negative binomial
+  - Zero-inflated negative binomial
+
+Note that these models all include trapping effort simply as a control variable. I have also tested includeing log trapping effort as the control or using log trapping effort as an offset. I have done this for now just with the M_MWI_max_ZINB_albo model. The results are practically identical in all cases and a loo comparison does not suggest any better fit with these alternate approaches. 
+
+### BG Trap Counts by MWI Category
+
+```{r}
+#| label: boxplot-counts-by-mwi-category
+
+plot_source_data = targets::tar_read(prepared_data) %>%
+  dplyr::select(n_albo, n_cx, n_total, ends_with("_cat"))
+
+  
+
+plot_data = plot_source_data %>%
+  rename(mwi_category = mean_era5_mwi_mean_cat) %>%
+  drop_na(mwi_category) %>%
+  pivot_longer(cols = c(n_albo, n_cx, n_total), names_to = "outcome", values_to = "count") %>%
+  mutate(outcome = recode(outcome,
+    n_albo = "Ae. albopictus",
+    n_cx = "Cx. pipiens",
+    n_total = "Total"
+  ))
+
+ggplot(plot_data, aes(x = mwi_category, y = count)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  facet_wrap(~ outcome, scales = "free_y") +
+  labs(
+    x = paste0("MWI activity category (mean_era5_mwi_mean_cat)"),
+    y = "BG trap count"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+## Model Equations
+
+Let $Y_i$ be the mosquito count for trap-period observation $i$ (for one of the three outcomes: $n_{\text{albo}}$, $n_{\text{cx}}$, or $n_{\text{total}}$). Let $j[i]$ index the trap for observation $i$.
+
+For all models, the count mean uses a log link:
+
+$$
+\mu_i = \mathbb{E}[Y_i \mid \cdot], \qquad
+\log(\mu_i) = \alpha + b_{j[i]} + \beta_E\,\text{trapping\_effort}_i + f(\mathbf{x}_i),
+$$
+
+with trap-level random intercept
+
+$$
+b_j \sim \mathcal{N}(0, \sigma_{\text{trap}}^2).
+$$
+
+The weather/specification function $f(\mathbf{x}_i)$ is one of the following families (using either trap-period aggregation $a \in \{\text{mean},\text{max}\}$, and window $w \in \{24\text{h},\text{AT},\text{DT}\}$):
+
+$$
+\begin{aligned}
+f_{\text{MWI}}^{(a,w)}(i) &= \beta_1\,\text{MWI}_{i}^{(a,w)},\\
+f_{\text{HTW-lin}}^{(a,w)}(i) &= \beta_1\,\text{RH}_{i}^{(a,w)} + \beta_2\,\text{Temp}_{i}^{(a,w)} + \beta_3\,\text{Wind}_{i}^{(a,w)},\\
+f_{\text{HTW-poly2}}^{(a,w)}(i) &= \sum_{v \in \{\text{RH},\text{Temp},\text{Wind}\}}\left[\beta_{v,1}P_1\!\left(v_i^{(a,w)}\right) + \beta_{v,2}P_2\!\left(v_i^{(a,w)}\right)\right],
+\end{aligned}
+$$
+
+where $P_1(\cdot),P_2(\cdot)$ are the two orthogonal polynomial basis terms generated by `poly(\cdot, 2)` in R.
+
+For seasonal variants, an additional second-degree polynomial in day-of-year is included:
+
+$$
+f_{\text{season}}(i) = \gamma_1\,Q_1(\text{sea\_day}_i) + \gamma_2\,Q_2(\text{sea\_day}_i),
+$$
+
+with $Q_1,Q_2$ from `poly(sea_day, 2)` and $\text{sea\_day}_i = \text{yday}(\text{end\_date}_i)$. Thus, seasonal models use $f(\mathbf{x}_i) + f_{\text{season}}(i)$.
+
+The stochastic component is one of three fitted families:
+
+$$
+Y_i \sim \text{Poisson}(\mu_i),
+$$
+
+$$
+Y_i \sim \text{NegBin}(\mu_i,\phi), \qquad
+\mathrm{Var}(Y_i\mid\cdot)=\mu_i + \frac{\mu_i^2}{\phi},
+$$
+
+or zero-inflated negative binomial,
+
+$$
+Y_i \sim \text{ZINB}(\mu_i,\phi,\pi_i),
+$$
+
+with mixture form
+
+$$
+\Pr(Y_i=0\mid\cdot)=\pi_i + (1-\pi_i)\Pr_{\text{NB}}(0\mid\mu_i,\phi),
+\qquad
+\Pr(Y_i=y>0\mid\cdot)=(1-\pi_i)\Pr_{\text{NB}}(y\mid\mu_i,\phi),
+$$
+
+and zero-inflation submodel
+
+$$
+\operatorname{logit}(\pi_i)=\alpha_{\text{zi}} + f(\mathbf{x}_i),
+$$
+
+matching the implemented `bf(y ~ x + trapping_effort + (1 | trap_name), zi ~ x)` structure.
+
+## Robustness across the full model grid
+
+The primary results above use a single specification (ZINB, 24-h maximum, no season). The two heatmaps below summarise the same index effect across the *entire* fitted grid — both indices (MWI and FHFT), all three likelihood families (Poisson, negative binomial, ZINB), both aggregation windows and statistics (24 h / albotime / daylight × mean / max), and with and without a seasonal polynomial — for all three outcomes. They let us check that the headline story is not an artefact of the primary specification.
+
+@fig-robust-coef shows the index coefficient itself. Each cell is coloured by the *signed probability of direction*, $\operatorname{sign}(\text{median}) \times \max(P(<0), P(>0))$, so hue encodes the sign of the effect (blue = negative, red = positive) and colour saturation encodes certainty (pale ≈ 0.5, saturated ≈ 1.0). An asterisk marks cells whose 90% credible interval excludes zero. The cell label is the posterior median coefficient on the model's native link scale. The count-component MWI/FHFT coefficient is firmly positive almost everywhere; the zero-inflation coefficient (ZINB only) is firmly negative for _Ae. albopictus_ and consistently negative but weaker for _Cx. pipiens_.
+
+```{r}
+#| label: fig-robust-coef
+#| message: false
+#| fig-height: 7
+#| fig-width: 12
+#| fig-cap: "Index (MWI/FHFT) coefficient across the full model grid. Cell fill is the signed probability of direction (blue negative, red positive; saturation = certainty), and an asterisk marks cells whose 90% credible interval excludes zero; the label is the posterior median coefficient on the native link scale (log for count components, logit for the zero-inflation component). Rows are aggregation window / statistic; columns are family and model component; facet rows are species and facet columns are index crossed with seasonality (MWI, MWI + sea, FHFT, FHFT + sea)."
+
+index_coef_summary <- targets::tar_read(index_coef_summary)
+plot_index_coef_heatmap(index_coef_summary)
+```
+
+@fig-robust-elpd shows the complementary out-of-sample view: the leave-one-out predictive gain (ΔELPD) of each index model relative to its matched no-index reduced model. Here blue means the index *improves* held-out prediction and red means it *worsens* it, an asterisk marks cells whose 90% interval (ΔELPD ± 1.645·SE) excludes zero. Because the Poisson models produce artificially large ΔELPD values, the fill scale is clipped to the range of the non-Poisson cells so the smaller-but-credible negative-binomial and ZINB gains stay visible; the numeric labels always give the true ΔELPD. The seasonal columns (`+ sea`) are close to zero throughout, reflecting the central finding that the index adds little once a seasonal term is present, while the non-seasonal columns show the large gains over a null model.
+
+```{r}
+#| label: fig-robust-elpd
+#| message: false
+#| fig-height: 7
+#| fig-width: 12
+#| fig-cap: "Leave-one-out predictive gain (ΔELPD) of each index model relative to its matched no-index reduced model, across the full grid. Blue = index improves held-out prediction; red = index worsens it; an asterisk marks cells whose 90% interval (ΔELPD ± 1.645·SE) excludes zero. The fill scale is clipped to the non-Poisson range (Poisson cells shown at the extreme colour); cell labels give the true ΔELPD. Rows are aggregation window / statistic; columns are family; facet rows are species and facet columns are index crossed with seasonality."
+
+delta_df <- dplyr::bind_rows(
+  dplyr::bind_rows(mwi_pairwise_loo_albo, mwi_pairwise_loo_cx, mwi_pairwise_loo_total) %>%
+    dplyr::mutate(index = "MWI"),
+  dplyr::bind_rows(fhft_pairwise_loo_albo, fhft_pairwise_loo_cx, fhft_pairwise_loo_total) %>%
+    dplyr::mutate(index = "FHFT")
+)
+plot_delta_elpd_heatmap(delta_df)
+```
+
+## MWI vs No-MWI Pairwise LOO Comparisons
+
+The tables below compare each fitted MWI model against the otherwise identical model with the MWI term removed. When removing MWI leaves the same remaining right-hand side, the same reduced model is reused across multiple comparisons. Positive values of `delta_elpd` indicate better out-of-sample predictive fit for the model including MWI.
+
+```{r}
+#| label: loo-compare-mwi-pairs
+#| results: 'asis'
+
+pairwise_tables = list(
+  "Albopictus: Negative Binomial" = mwi_pairwise_loo_albo %>% filter(family == "negbinomial"),
+  "Albopictus: Poisson" = mwi_pairwise_loo_albo %>% filter(family == "poisson"),
+  "Albopictus: Zero-Inflated Negative Binomial" = mwi_pairwise_loo_albo %>% filter(family == "zero_inflated_negbinomial"),
+  "Culex: Negative Binomial" = mwi_pairwise_loo_cx %>% filter(family == "negbinomial"),
+  "Culex: Poisson" = mwi_pairwise_loo_cx %>% filter(family == "poisson"),
+  "Culex: Zero-Inflated Negative Binomial" = mwi_pairwise_loo_cx %>% filter(family == "zero_inflated_negbinomial"),
+  "Total: Negative Binomial" = mwi_pairwise_loo_total %>% filter(family == "negbinomial"),
+  "Total: Poisson" = mwi_pairwise_loo_total %>% filter(family == "poisson"),
+  "Total: Zero-Inflated Negative Binomial" = mwi_pairwise_loo_total %>% filter(family == "zero_inflated_negbinomial")
+)
+
+for(this_title in names(pairwise_tables)){
+  cat("### ", this_title, "\n\n", sep = "")
+
+  this_table = pairwise_tables[[this_title]] %>%
+    mutate(window = as.character(window), aggregation = as.character(aggregation), seasonality = as.character(seasonality)) %>%
+    select(
+      Window = window,
+      Aggregation = aggregation,
+      Seasonality = seasonality,
+      `MWI model` = mwi_model,
+      `Reduced model` = reduced_model,
+      `ELPD with MWI` = full_elpd,
+      `ELPD without MWI` = reduced_elpd,
+      `delta_elpd` = delta_elpd,
+      `se_diff` = se_diff
+    )
+
+  print(kableExtra::kbl(this_table, digits = 2, format = "html"))
+  cat("\n\n")
+}
+
+rm(pairwise_tables)
+```
+
+## MWI vs No-MWI Pairwise 2018 Train / 2019 Test Comparisons
+
+The tables below fit each MWI model using only the 2018 observations and evaluate predictive performance on the 2019 observations. Positive values of `delta_elpd` indicate better held-out predictive fit in 2019 for the model including MWI.
+
+```{r}
+#| label: holdout-compare-mwi-pairs
+#| results: 'asis'
+
+holdout_tables = list(
+  "Albopictus: Negative Binomial" = mwi_pairwise_holdout_albo %>% filter(family == "negbinomial"),
+  "Albopictus: Poisson" = mwi_pairwise_holdout_albo %>% filter(family == "poisson"),
+  "Albopictus: Zero-Inflated Negative Binomial" = mwi_pairwise_holdout_albo %>% filter(family == "zero_inflated_negbinomial"),
+  "Culex: Negative Binomial" = mwi_pairwise_holdout_cx %>% filter(family == "negbinomial"),
+  "Culex: Poisson" = mwi_pairwise_holdout_cx %>% filter(family == "poisson"),
+  "Culex: Zero-Inflated Negative Binomial" = mwi_pairwise_holdout_cx %>% filter(family == "zero_inflated_negbinomial"),
+  "Total: Negative Binomial" = mwi_pairwise_holdout_total %>% filter(family == "negbinomial"),
+  "Total: Poisson" = mwi_pairwise_holdout_total %>% filter(family == "poisson"),
+  "Total: Zero-Inflated Negative Binomial" = mwi_pairwise_holdout_total %>% filter(family == "zero_inflated_negbinomial")
+)
+
+for(this_title in names(holdout_tables)){
+  cat("### ", this_title, "\n\n", sep = "")
+
+  this_table = holdout_tables[[this_title]] %>%
+    mutate(window = as.character(window), aggregation = as.character(aggregation), seasonality = as.character(seasonality)) %>%
+    select(
+      Window = window,
+      Aggregation = aggregation,
+      Seasonality = seasonality,
+      `MWI model` = mwi_model,
+      `Reduced model` = reduced_model,
+      `2019 obs` = n_obs,
+      `ELPD with MWI` = full_elpd,
+      `ELPD without MWI` = reduced_elpd,
+      `Mean ELPD with MWI` = full_mean_elpd,
+      `Mean ELPD without MWI` = reduced_mean_elpd,
+      `delta_elpd` = delta_elpd,
+      `se_diff` = se_diff
+    )
+
+  print(kableExtra::kbl(this_table, digits = 2, format = "html"))
+  cat("\n\n")
+}
+
+rm(holdout_tables)
+```
+
+## FHFT vs No-FHFT Pairwise LOO Comparisons
+
+The tables below compare each fitted FHFT model against the otherwise identical model with the FHFT term removed. Here FHFT is the humidity component multiplied by the temperature component, omitting wind from the original MWI construction. Positive values of `delta_elpd` indicate better out-of-sample predictive fit for the model including FHFT.
+
+```{r}
+#| label: loo-compare-fhft-pairs
+#| results: 'asis'
+
+fhft_pairwise_tables = list(
+  "Albopictus: Negative Binomial" = fhft_pairwise_loo_albo %>% filter(family == "negbinomial"),
+  "Albopictus: Poisson" = fhft_pairwise_loo_albo %>% filter(family == "poisson"),
+  "Albopictus: Zero-Inflated Negative Binomial" = fhft_pairwise_loo_albo %>% filter(family == "zero_inflated_negbinomial"),
+  "Culex: Negative Binomial" = fhft_pairwise_loo_cx %>% filter(family == "negbinomial"),
+  "Culex: Poisson" = fhft_pairwise_loo_cx %>% filter(family == "poisson"),
+  "Culex: Zero-Inflated Negative Binomial" = fhft_pairwise_loo_cx %>% filter(family == "zero_inflated_negbinomial"),
+  "Total: Negative Binomial" = fhft_pairwise_loo_total %>% filter(family == "negbinomial"),
+  "Total: Poisson" = fhft_pairwise_loo_total %>% filter(family == "poisson"),
+  "Total: Zero-Inflated Negative Binomial" = fhft_pairwise_loo_total %>% filter(family == "zero_inflated_negbinomial")
+)
+
+for(this_title in names(fhft_pairwise_tables)){
+  cat("### ", this_title, "\n\n", sep = "")
+
+  this_table = fhft_pairwise_tables[[this_title]] %>%
+    mutate(window = as.character(window), aggregation = as.character(aggregation), seasonality = as.character(seasonality)) %>%
+    select(
+      Window = window,
+      Aggregation = aggregation,
+      Seasonality = seasonality,
+      `FHFT model` = fhft_model,
+      `Reduced model` = reduced_model,
+      `ELPD with FHFT` = full_elpd,
+      `ELPD without FHFT` = reduced_elpd,
+      `delta_elpd` = delta_elpd,
+      `se_diff` = se_diff
+    )
+
+  print(kableExtra::kbl(this_table, digits = 2, format = "html"))
+  cat("\n\n")
+}
+
+rm(fhft_pairwise_tables)
+```
+
+## FHFT vs No-FHFT Pairwise 2018 Train / 2019 Test Comparisons
+
+The tables below fit each FHFT model using only the 2018 observations and evaluate predictive performance on the 2019 observations. Positive values of `delta_elpd` indicate better held-out predictive fit in 2019 for the model including FHFT.
+
+```{r}
+#| label: holdout-compare-fhft-pairs
+#| results: 'asis'
+
+fhft_holdout_tables = list(
+  "Albopictus: Negative Binomial" = fhft_pairwise_holdout_albo %>% filter(family == "negbinomial"),
+  "Albopictus: Poisson" = fhft_pairwise_holdout_albo %>% filter(family == "poisson"),
+  "Albopictus: Zero-Inflated Negative Binomial" = fhft_pairwise_holdout_albo %>% filter(family == "zero_inflated_negbinomial"),
+  "Culex: Negative Binomial" = fhft_pairwise_holdout_cx %>% filter(family == "negbinomial"),
+  "Culex: Poisson" = fhft_pairwise_holdout_cx %>% filter(family == "poisson"),
+  "Culex: Zero-Inflated Negative Binomial" = fhft_pairwise_holdout_cx %>% filter(family == "zero_inflated_negbinomial"),
+  "Total: Negative Binomial" = fhft_pairwise_holdout_total %>% filter(family == "negbinomial"),
+  "Total: Poisson" = fhft_pairwise_holdout_total %>% filter(family == "poisson"),
+  "Total: Zero-Inflated Negative Binomial" = fhft_pairwise_holdout_total %>% filter(family == "zero_inflated_negbinomial")
+)
+
+for(this_title in names(fhft_holdout_tables)){
+  cat("### ", this_title, "\n\n", sep = "")
+
+  this_table = fhft_holdout_tables[[this_title]] %>%
+    mutate(window = as.character(window), aggregation = as.character(aggregation), seasonality = as.character(seasonality)) %>%
+    select(
+      Window = window,
+      Aggregation = aggregation,
+      Seasonality = seasonality,
+      `FHFT model` = fhft_model,
+      `Reduced model` = reduced_model,
+      `2019 obs` = n_obs,
+      `ELPD with FHFT` = full_elpd,
+      `ELPD without FHFT` = reduced_elpd,
+      `Mean ELPD with FHFT` = full_mean_elpd,
+      `Mean ELPD without FHFT` = reduced_mean_elpd,
+      `delta_elpd` = delta_elpd,
+      `se_diff` = se_diff
+    )
+
+  print(kableExtra::kbl(this_table, digits = 2, format = "html"))
+  cat("\n\n")
+}
+
+rm(fhft_holdout_tables)
+```
+
+## Full Results: Albopictus Count Models
+
+### LOO Comparison: All
+
+```{r}
+#| label: loo-compare-albo
+
+loo_compare(combined_loos_albo)
+
+```
+
+### LOO Comparison: Basic
+
+```{r}
+#| label: loo-compare-albo-basic
+
+loo_names = names(combined_loos_albo)
+these_indexes = which(!str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_albo[these_indexes])
+
+```
+
+### LOO Comparison: Seasonality
+
+```{r}
+#| label: loo-compare-albo-sea
+
+loo_names = names(combined_loos_albo)
+these_indexes = which(str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_albo[these_indexes])
+
+```
+
+### LOO Comparison: Polynomial Weather
+
+```{r}
+#| label: loo-compare-albo-poly
+
+these_indexes = which(!str_detect(loo_names, "sea") & str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_albo[these_indexes])
+
+```
+
+
+### Parameter Estimates
+
+```{r}
+#| label: model-comparison-table-albo
+#| results: 'asis'
+
+these_model_names = paste0("M_", model_names$n_albo_models)
+
+variations = expand_grid(a = c("MWI_", "HTW_"), b = c("_NB_", "_P", "_ZINB_"), c = c("24h", "AT", "DT"))
+
+for(i in 1:nrow(variations)){
+  these_model_names_subset  = these_model_names[which(str_detect(these_model_names, variations$a[i]) & str_detect(these_model_names, variations$b[i]))]
+  
+if(variations$c[i]=="24h"){
+  these_model_names_subset = these_model_names_subset[which(!str_detect(these_model_names_subset, "AT") & !str_detect(these_model_names_subset, "DT"))]
+} else{
+  these_model_names_subset = these_model_names_subset[which(str_detect(these_model_names_subset, variations$c[i]))]
+}
+  
+      cat("#### ", str_replace_all(unlist(variations[i,]), "_", ""), "\n\n")
+
+        cat("##### Summary Table", "\n\n")
+    
+  these_models = lapply(these_model_names_subset, function(this_model_name) do.call(targets::tar_read, list(this_model_name)))
+
+  print(mcmcReg(these_models, pars = 'b_', regex = TRUE, format = 'html'))
+  
+  cat("\n\n")
+  
+
+ for(j in 1:length(these_model_names_subset)){
+ 
+       cat("##### ", these_model_names_subset[j], "\n\n")
+
+     plot(conditional_effects(these_models[[j]]), ask=FALSE)
+
+    cat("\n\n")
+}
+ 
+}
+
+rm(these_models)
+
+```
+
+
+## Full Results: Culex Count Models
+
+### LOO Comparison: ALL
+
+```{r}
+#| label: loo-compare-cx
+
+loo_compare(combined_loos_cx)
+
+```
+
+
+### LOO Comparison: Basic
+
+```{r}
+#| label: loo-compare-cx-basic
+
+loo_names = names(combined_loos_cx)
+these_indexes = which(!str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_cx[these_indexes])
+
+```
+
+### LOO Comparison: Seasonality
+
+```{r}
+#| label: loo-compare-cx-sea
+
+loo_names = names(combined_loos_cx)
+these_indexes = which(str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_cx[these_indexes])
+
+```
+
+### LOO Comparison: Polynomial Weather
+
+```{r}
+#| label: loo-compare-cx-poly
+
+loo_names = names(combined_loos_cx)
+these_indexes = which(!str_detect(loo_names, "sea") & str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_cx[these_indexes])
+
+```
+
+
+### Parameter Estimates
+
+```{r}
+#| label: model-comparison-table-cx
+#| results: 'asis'
+
+these_model_names = paste0("M_", model_names$n_cx_models)
+
+variations = expand_grid(a = c("MWI_", "HTW_"), b = c("_NB_", "_P", "_ZINB_"), c = c("24h", "AT", "DT"))
+
+for(i in 1:nrow(variations)){
+  these_model_names_subset  = these_model_names[which(str_detect(these_model_names, variations$a[i]) & str_detect(these_model_names, variations$b[i]))]
+  
+if(variations$c[i]=="24h"){
+  these_model_names_subset = these_model_names_subset[which(!str_detect(these_model_names_subset, "AT") & !str_detect(these_model_names_subset, "DT"))]
+} else{
+  these_model_names_subset = these_model_names_subset[which(str_detect(these_model_names_subset, variations$c[i]))]
+}
+  
+      cat("#### ", str_replace_all(unlist(variations[i,]), "_", ""), "\n\n")
+
+        cat("#### Summary Table", "\n\n")
+    
+  these_models = lapply(these_model_names_subset, function(this_model_name) do.call(targets::tar_read, list(this_model_name)))
+
+  print(mcmcReg(these_models, pars = 'b_', regex = TRUE, format = 'html'))
+
+   cat("\n\n")
+  
+
+ for(j in 1:length(these_model_names_subset)){
+ 
+       cat("#### ", these_model_names_subset[j], "\n\n")
+
+     plot(conditional_effects(these_models[[j]]), ask=FALSE)
+
+    cat("\n\n")
+}
+ 
+}
+
+rm(these_models)
+
+```
+
+
+## Full Results: Total Count Models
+
+### LOO Comparison
+
+```{r}
+#| label: loo-compare-total
+
+loo_compare(combined_loos_total)
+
+```
+
+
+### LOO Comparison: Basic
+
+```{r}
+#| label: loo-compare-total-basic
+
+loo_names = names(combined_loos_total)
+these_indexes = which(!str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_total[these_indexes])
+
+```
+
+### LOO Comparison: Seasonality
+
+```{r}
+#| label: loo-compare-total-sea
+
+loo_names = names(combined_loos_total)
+these_indexes = which(str_detect(loo_names, "sea") & !str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_total[these_indexes])
+
+```
+
+### LOO Comparison: Polynomial Weather
+
+```{r}
+#| label: loo-compare-total-poly
+
+loo_names = names(combined_loos_total)
+these_indexes = which(!str_detect(loo_names, "sea") & str_detect(loo_names, "poly"))
+
+loo_compare(combined_loos_total[these_indexes])
+
+```
+
+
+
+### Parameter Estimates
+
+```{r}
+#| label: model-comparison-table-total
+#| results: 'asis'
+
+these_model_names = paste0("M_", model_names$n_total_models)
+
+variations = expand_grid(a = c("MWI_", "HTW_"), b = c("_NB_", "_P", "_ZINB_"), c = c("24h", "AT", "DT"))
+
+for(i in 1:nrow(variations)){
+  these_model_names_subset  = these_model_names[which(str_detect(these_model_names, variations$a[i]) & str_detect(these_model_names, variations$b[i]))]
+  
+if(variations$c[i]=="24h"){
+  these_model_names_subset = these_model_names_subset[which(!str_detect(these_model_names_subset, "AT") & !str_detect(these_model_names_subset, "DT"))]
+} else{
+  these_model_names_subset = these_model_names_subset[which(str_detect(these_model_names_subset, variations$c[i]))]
+}
+
+      cat("\n\n")
+      
+      cat("#### ", str_replace_all(unlist(variations[i,]), "_", ""), "\n\n")
+
+
+        cat("#### Summary Table", "\n\n")
+    
+  these_models = lapply(these_model_names_subset, function(this_model_name) do.call(targets::tar_read, list(this_model_name)))
+
+  print(mcmcReg(these_models, pars = 'b_', regex = TRUE, format = 'html'))
+  
+  cat("\n\n")
+  
+
+ for(j in 1:length(these_model_names_subset)){
+ 
+       cat("#### ", these_model_names_subset[j], "\n\n")
+
+     plot(conditional_effects(these_models[[j]]), ask=FALSE)
+
+    cat("\n\n")
+}
+ 
+}
+
+rm(these_models)
+
+
+```
+
+## Appendix
+
+### Data Summary
+
+```{r}
+#| label: data-descriptives
+#| results: 'asis'
+
+print(dfSummary(prepared_data, plain.ascii = FALSE, style = "multiline", graph.magnif = 0.75, valid.col = FALSE), caption="Summary of all variables contained in the prepared data set. {#tbl-data-descriptives}")
+
+
+```
+
+### Platform Information
+
+```{r}
+#| label: platform_info
+
+this_session_info$platform %>% as_tibble() %>% kableExtra::kbl()
+
+```
+
+### R Package Information
+
+```{r}
+
+this_session_info$packages %>% as_tibble() %>% kableExtra::kbl() 
+
+
+```
+
+### Additional Aedes albopictus MWI Figures
+
+These figures were previously in the Main Results section and are retained here for completeness. The Bayes R² values are for the six zero-inflated negative binomial MWI specifications of _Ae. albopictus_ females (the three windows × mean/max daily MWI, without seasonality).
+
+```{r}
+#| label: setup-albo-appendix-figs
+#| message: false
+
+these_model_names_albo_app = tibble(x = model_names$n_albo_models) %>%
+  filter(str_starts(x, "MWI"), str_ends(x, "ZINB_albo"), !str_ends(x, "sea_ZINB_albo")) %>%
+  mutate(model_name = paste0("M_", x))
+these_models_albo_app = lapply(these_model_names_albo_app$model_name, function(nm) targets::tar_read_raw(nm))
+```
+
+```{r}
+#| label: fig-mwi-albo-br2
+#| message: false
+#| fig-cap: "Bayes R-squared estimates for the six zero-inflated negative binomial MWI models of _Ae. albopictus_ females."
+
+br2 = bind_rows(lapply(seq_along(these_models_albo_app), function(i){
+  bayes_R2(these_models_albo_app[[i]]) %>% as_tibble() %>% mutate(model = these_model_names_albo_app$x[i])
+}))
+
+ggplot(br2, aes(y = model, x = Estimate)) + geom_pointrange(aes(xmin = Q2.5, xmax = Q97.5))
+```
+
+@fig-mwi-albo-preds shows observed and predicted _Ae. albopictus_ female counts over time, from the primary 24-hour maximum MWI ZINB model. The model tends to under-predict at the height of the season and over-predict early on, reflecting unmodelled population dynamics — part of what the seasonal models capture.
+
+```{r}
+#| label: fig-mwi-albo-preds
+#| message: false
+#| fig-cap: "Observed and predicted BG trap counts of _Ae. albopictus_ females over time, from the primary 24-hour maximum MWI zero-inflated negative binomial model."
+
+this_model = targets::tar_read(M_MWI_max_ZINB_albo)
+this_data = prepared_data
+this_data$pred = predict(this_model, newdata = this_data)[, 'Estimate']
+
+this_data %>% dplyr::select(end_date, n_albo, pred, trap_name) %>%
+  pivot_longer(-c(end_date, trap_name)) %>%
+  ggplot(aes(x = end_date, y = value, color = name)) +
+  geom_line() + geom_point(size = .6) + facet_wrap(. ~ trap_name) +
+  ylab("Count") + xlab("Date") +
+  scale_color_discrete("Type", labels = c("obs.", "pred."))
+```
+
+### Python Environment Information
+
+The python environment I used for downloading and doing initial wrangling of the ERA5-hourly data is as follows (copied and pasted from the requirements.txt file generated using conda list --export > requirements.txt):
+
+```
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: osx-arm64
+# created-by: conda 24.9.2
+attrs=24.3.0=py313hca03da5_0
+blosc=1.21.5=h9c252e8_1
+bottleneck=1.4.2=py313ha35b7ea_0
+bzip2=1.0.8=h80987f9_6
+c-ares=1.19.1=h80987f9_0
+ca-certificates=2024.12.31=hca03da5_0
+cffi=1.17.1=py313h3eb5a62_1
+cfgrib=0.9.15.0=pyhd8ed1ab_0
+click=8.1.7=py313hca03da5_0
+eccodes=2.35.0=h64f3314_0
+expat=2.6.4=h313beb8_0
+findlibs=0.0.5=pyhd8ed1ab_0
+hdf4=4.2.15=h2ee6834_7
+hdf5=1.14.3=nompi_hec07895_105
+icu=73.1=h313beb8_0
+jasper=4.2.4=h6c4e4ef_0
+krb5=1.20.1=hf3e1bf2_1
+libaec=1.1.3=h313beb8_0
+libblas=3.9.0=1_h9886b1c_netlib
+libcblas=3.9.0=1_h9886b1c_netlib
+libcurl=8.12.0=hde089ae_0
+libcxx=19.1.7=ha82da77_0
+libedit=3.1.20230828=h80987f9_0
+libev=4.33=h1a28f6b_1
+libffi=3.4.4=hca03da5_1
+libgfortran=5.0.0=13_2_0_hd922786_3
+libgfortran5=13.2.0=hf226fd6_3
+libiconv=1.16=h80987f9_3
+libjpeg-turbo=3.0.3=h80987f9_0
+liblapack=3.9.0=1_h9886b1c_netlib
+libmpdec=4.0.0=h80987f9_0
+libnetcdf=4.9.2=nompi_he469be0_114
+libnghttp2=1.57.0=h62f6fdd_0
+libpng=1.6.43=h091b4b1_0
+libssh2=1.11.1=h3e2b118_0
+libxml2=2.13.5=h0b34f26_0
+libzip=1.10.1=ha0bc3c6_3
+libzlib=1.2.13=hfb2fe0b_6
+llvm-openmp=14.0.6=hc6e5704_0
+lz4-c=1.9.4=h313beb8_1
+ncurses=6.4=h313beb8_0
+numexpr=2.10.1=py313h5d9532f_0
+numpy=2.2.3=py313h41a2e72_0
+openssl=3.4.1=h81ee809_0
+packaging=24.2=py313hca03da5_0
+pandas=2.2.3=py313hcf29cfe_0
+pip=24.2=py313hca03da5_0
+pycparser=2.21=pyhd3eb1b0_0
+python=3.13.2=h4862095_100_cp313
+python-dateutil=2.9.0post0=py313hca03da5_2
+python-eccodes=1.7.1=py313h93df234_1
+python-tzdata=2023.3=pyhd3eb1b0_0
+python_abi=3.13=0_cp313
+pytz=2024.1=py313hca03da5_0
+readline=8.2=h1a28f6b_0
+setuptools=75.8.0=py313hca03da5_0
+six=1.16.0=pyhd3eb1b0_1
+snappy=1.2.1=h313beb8_0
+sqlite=3.45.3=h80987f9_0
+tk=8.6.14=h6ba3021_0
+tzdata=2025a=h04d1e81_0
+wheel=0.44.0=py313hca03da5_0
+xarray=2024.11.0=py313hca03da5_0
+xz=5.4.6=h80987f9_1
+zlib=1.2.13=hfb2fe0b_6
+zstd=1.5.6=hfb09047_0
+
+
+```
+
