@@ -26,6 +26,11 @@ jobs:
       # defining the report target calls quarto_inspect() on the .qmd.
       - uses: quarto-dev/quarto-actions/setup@v2
 
+      # The package list must cover everything in tar_option_set(packages = ...)
+      # in _targets.R: tar_make() verifies all globally declared packages exist
+      # before building anything, even targets that use none of them. brms,
+      # tmap and devtools are needed only for that check here (RSPM binaries,
+      # so the install stays quick).
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           packages: |
@@ -41,6 +46,9 @@ jobs:
             any::hms
             any::scales
             any::quarto
+            any::brms
+            any::tmap
+            any::devtools
             E4Warning/mwi
 
       - name: Pipeline parses into the full target graph
