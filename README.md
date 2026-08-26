@@ -1,5 +1,7 @@
 # evaluating-mwi
 
+[![pipeline-check](https://github.com/E4Warning/evaluating-mwi/actions/workflows/pipeline-check.yaml/badge.svg)](https://github.com/E4Warning/evaluating-mwi/actions/workflows/pipeline-check.yaml)
+
 Replication package for:
 
 > Michaelakis, A., Balatsos, G., Karras, V., Papachristos, D., Lowe, R.,
@@ -21,7 +23,7 @@ The index itself is implemented as a standalone R package at
 ```r
 install.packages(c("targets", "tarchetypes", "brms", "loo", "posterior",
                    "tidybayes", "tidyverse", "readxl", "data.table", "janitor",
-                   "qs", "sf", "tmap", "suncalc", "scales", "hms", "quarto"))
+                   "qs2", "sf", "tmap", "suncalc", "scales", "hms", "quarto"))
 
 # The MWI itself is computed by the companion package:
 pak::pak("E4Warning/mwi")   # or remotes::install_github("E4Warning/mwi")

@@ -31,7 +31,7 @@ jobs:
             any::readxl
             any::data.table
             any::janitor
-            any::qs
+            any::qs2
             any::sf
             any::suncalc
             any::hms
