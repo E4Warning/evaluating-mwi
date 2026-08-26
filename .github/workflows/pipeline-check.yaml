@@ -1,0 +1,57 @@
+# Smoke test for the replication pipeline. Fitting the 468 Bayesian models takes
+# ~22 hours, so CI verifies the parts that can rot silently: that the pipeline
+# definition parses into its full target graph, and that the data-preparation
+# stage builds prepared_data from the shipped raw data with the expected shape.
+name: pipeline-check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pipeline-check:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::targets
+            any::tarchetypes
+            any::tidyverse
+            any::readxl
+            any::data.table
+            any::janitor
+            any::qs
+            any::sf
+            any::suncalc
+            any::hms
+            any::scales
+            E4Warning/mwi
+
+      - name: Pipeline parses into the full target graph
+        run: |
+          n <- nrow(targets::tar_manifest(callr_function = NULL, fields = "name"))
+          cat("targets in manifest:", n, "\n")
+          stopifnot(n > 3000)
+        shell: Rscript {0}
+
+      - name: prepared_data builds from shipped data
+        run: |
+          targets::tar_make(names = "prepared_data", callr_function = NULL,
+                            reporter = "silent")
+          d <- targets::tar_read(prepared_data)
+          cat("prepared_data:", nrow(d), "x", ncol(d), "\n")
+          stopifnot(nrow(d) == 360, ncol(d) > 1000,
+                    sum(d$n_albo, na.rm = TRUE) == 7094,
+                    sum(d$n_cx,  na.rm = TRUE) == 3260)
+        shell: Rscript {0}

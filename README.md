@@ -30,6 +30,16 @@ targets::tar_make()          # full pipeline (see runtime warning below)
 targets::tar_visnetwork()    # inspect the dependency graph first
 ```
 
+Exact package versions used for the published results are recorded in
+`renv.lock` (291+ packages, R 4.4.2). To reproduce that environment rather than
+using current versions:
+
+```r
+install.packages("renv")
+renv::init()      # activates a project library
+renv::restore()   # installs the locked versions
+```
+
 `brms` requires a working Stan toolchain; see
 <https://mc-stan.org/cmdstanr/articles/cmdstanr.html> or the RStan installation
 guide for your platform.

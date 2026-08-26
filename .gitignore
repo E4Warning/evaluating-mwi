@@ -51,3 +51,6 @@ data/proc/*
 !data/proc/helix.Rds
 !data/proc/hobos.Rds
 !data/proc/hobos_sundata.Rds
+
+# Headless-R graphics side effect of tar_make
+Rplots.pdf
