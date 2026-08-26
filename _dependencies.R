@@ -9,3 +9,6 @@ library(quarto)
 #     >= 1.8.0. (The older qs package was archived from CRAN in January 2026
 #     and is not used.)
 library(qs2)
+#   - R.utils: loaded lazily by data.table::fread() to decompress the
+#     era5_*.csv.gz extracts; never referenced by name in the code.
+library(R.utils)

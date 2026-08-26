@@ -49,6 +49,7 @@ jobs:
             any::brms
             any::tmap
             any::devtools
+            any::R.utils
             E4Warning/mwi
 
       - name: Pipeline parses into the full target graph
