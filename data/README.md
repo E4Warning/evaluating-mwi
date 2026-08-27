@@ -23,10 +23,10 @@ data/raw/ ───────────────────────�
 | `traps/Moschato_Tavros_bg_2018_2019.xlsx` | Benaki Phytopathological Institute | Weekly BG-Sentinel 2 collections, six traps, Jul 2018 – Oct 2019, with trap coordinates in the `trap_info` sheet |
 | `traps/BG_{2,3,4,5}_{a,b,c}_hobo_*.{csv,xlsx}` | Benaki Phytopathological Institute | HOBO Pro v2 logger readings at 30-minute resolution, four instrumented traps, three deployment periods each |
 | `weather/*.txt` | National Observatory of Athens | Daily station summaries, one file per month |
-| `weather_helix/athens.csv` | [Hellenic Data Service](https://www.helix.gr/) | Daily Athens station series (the "Helix-daily" source in the article) |
+| `weather_helix/athens.csv` | Hellenic Data Service (dataset `66e1c19a-7b0e-456f-b465-b301a1130e3f`) | Daily Athens station series (the "Helix-daily" source in the article) |
 
 The trap counts and logger readings are also published as a FAIR Frictionless
-Data Package at <https://zenodo.org/doi/10.5281/zenodo.21195178>, which is the
+Data Package at <https://doi.org/10.5281/zenodo.21195178>, which is the
 citable version of these data.
 
 ## `data/proc/` — derived inputs
@@ -75,5 +75,11 @@ from the repository root.
   <https://doi.org/10.24381/cds.e2161bac>. Generated using Copernicus Climate
   Change Service information; neither the European Commission nor ECMWF is
   responsible for any use of this Copernicus information.
-- **Helix-daily** — Hellenic Data Service, <https://www.helix.gr/>.
+- **Helix-daily** — Hellenic Data Service, dataset
+  `66e1c19a-7b0e-456f-b465-b301a1130e3f`, downloaded from
+  `data.hellenicdataservice.gr`. **That service is currently offline** (its
+  former `helix.gr` domain has lapsed and now resolves to a domain-sale page;
+  `hellenicdataservice.gr` has an expired certificate and its application no
+  longer responds). The file as used in the analysis is therefore included
+  here as `data/raw/weather_helix/athens.csv`.
 - **National Observatory of Athens station data** — NOA.
