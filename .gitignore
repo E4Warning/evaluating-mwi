@@ -54,3 +54,6 @@ data/proc/*
 
 # Headless-R graphics side effect of tar_make
 Rplots.pdf
+
+# --- Data release build (published on Zenodo; built by scripts/a999) ----------
+data/pub/

@@ -79,6 +79,15 @@ K2C = function(temp){
 #' order is retained from earlier versions of this pipeline, which call it with
 #' named arguments.
 #'
+#' The coefficients are pinned here, rather than taken from the package
+#' defaults, because they are the ones that produced the published results.
+#' They differ slightly from Vaisala's published values (m = 7.591386,
+#' Tn = 240.7263), which the mwi package uses from version 0.1.0.9000: over the
+#' study's ERA5-Land hours the difference in relative humidity is at most
+#' 0.0001 percentage points, and it never moves a value across the 40% or 95%
+#' humidity cut-offs. Keep them as they are, so the pipeline reproduces the
+#' article exactly.
+#'
 #' @param m Magnus constant, defaults to 7.591398.
 #' @param tn Magnus temperature constant, defaults to 240.726.
 #' @param dewpoint_2m_c Dew point temperature in Celsius.
@@ -99,18 +108,6 @@ windspeed_from_components = function(u, v){
   mwi::wind_speed_from_components(u, v)
 }
 
-
-#' Safe max helper that tolerates all-NA vectors
-#'
-#' @param x Numeric vector possibly filled with `NA`s.
-#' @return Maximum value or `NA` if all entries are missing.
-max_nasafe <- function(x) ifelse( !all(is.na(x)), max(x, na.rm=T), NA)
-
-#' Safe min helper that tolerates all-NA vectors
-#'
-#' @param x Numeric vector possibly filled with `NA`s.
-#' @return Minimum value or `NA` if all entries are missing.
-min_nasafe <- function(x) ifelse( !all(is.na(x)), min(x, na.rm=T), NA)
 
 #' Safe mean helper that tolerates all-NA vectors
 #'
@@ -156,54 +153,6 @@ mwi_activity_category <- function(x){
   )
 }
 
-#' Posterior conditional effect plot
-#'
-#' Generates a ggplot of conditional effects for a single predictor from a brms
-#' model, optionally transforming standardized predictors back to original
-#' units and supporting zero-inflation parameters.
-#'
-#' @param model A fitted `brmsfit` object.
-#' @param variable_name Character scalar naming the predictor to display.
-#' @param xlab Label for the x-axis.
-#' @param ylab Label for the y-axis.
-#' @param title Plot title.
-#' @param color Line color.
-#' @param unstandardize Logical, set `TRUE` to re-scale `variable_name`.
-#' @param var_sd,var_mean Scaling parameters used when `unstandardize = TRUE`.
-#' @param zi Logical, `TRUE` to plot conditional effects for the zero-inflation
-#'   component.
-#' @return A ggplot object.
-pretty_ce_plot = function(model, variable_name, xlab, ylab, title = "", color = "#E74C3C", unstandardize = FALSE, var_sd = NA, var_mean = NA, zi=FALSE, dpar = NULL, prob = 0.90){
-  
-  c_eff_args <- list(model, effects = variable_name, prob = prob)
-  
-  if(zi){
-    c_eff_args$dpar <- "zi"
-  }
-
-  if(!is.null(dpar)){
-    c_eff_args$dpar <- dpar
-  }
-
-  c_eff <- do.call(conditional_effects, c_eff_args)
-  
-  df <- as.data.frame(c_eff[[1]])
-  
-  if(unstandardize){
-    df[ ,variable_name] = df[ ,variable_name]*var_sd + var_mean
-  }
-  
-  variable_name_sym = sym(variable_name)
-  
-  this_plot <- ggplot(df, aes(x = !!variable_name_sym, y = estimate__)) +
-    geom_line(color = color) +
-    geom_ribbon(aes(ymin = lower__, ymax = upper__), fill = color, alpha = 0.2) +
-    labs(title = title,
-         x = xlab,
-         y = ylab) 
-  return(this_plot)
-}
-
 # Species colors used consistently across the main-results figures. These two
 # colours are reserved for the two species and are deliberately distinct from
 # the blue/red diverging scales used in the robustness grid heatmaps.
@@ -216,7 +165,7 @@ species_palette <- c(
 #'
 #' Draws the expected trap count as a function of a single predictor for two or
 #' more fitted models, stacking one facet per species so that the x-axis is
-#' shared. As in [pretty_ce_plot()], the curves come from
+#' shared. The curves come from
 #' [brms::conditional_effects()] (i.e. `posterior_epred`), so for zero-inflated
 #' families they include the zero-inflation component.
 #'
@@ -508,10 +457,12 @@ copy_report_section_figures <- function(report_output, destination_dir, section_
 #'   or zero_inflated_negbinomial).
 #' @param data Prepared modeling data frame.
 #' @param n_cores,n_threads Currently unused, reserved for future parallelism.
+#' @param prior Optional `brms` prior. `NULL` (the default) keeps brms's
+#'   default flat priors on the regression coefficients.
 #' @param iterations Number of MCMC iterations.
 #' @param adapt_delta Target acceptance rate for the NUTS sampler.
 #' @return A `brmsfit` object.
-fit_main_models = function(y, x, family, data, n_cores = 4, n_threads = 4, iterations = 2000, adapt_delta = 0.98){
+fit_main_models = function(y, x, family, data, n_cores = 4, n_threads = 4, iterations = 2000, adapt_delta = 0.98, prior = NULL){
   ensure_pipeline_tempdir()
   
   these_xs = paste(x, collapse = "+")
@@ -534,7 +485,9 @@ fit_main_models = function(y, x, family, data, n_cores = 4, n_threads = 4, itera
     stop("Family not specified or not recognized")
   }
   
-  brm( this_bf, data=data, family=this_family, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = tar_seed_get())
+  # prior = NULL keeps brms's defaults: flat (improper) priors on the
+  # regression coefficients, in the count and zero-inflation components alike.
+  brm( cores = getOption("mc.cores", 4L), this_bf, data=data, family=this_family, prior = prior, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = targets::tar_seed_get())
   
 }
 
@@ -574,7 +527,7 @@ fit_main_models_logTE = function(y, x, family, data, n_cores = 4, n_threads = 4,
     stop("Family not specified or not recognized")
   }
   
-  brm( this_bf, data=data, family=this_family, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = tar_seed_get())
+  brm( cores = getOption("mc.cores", 4L), this_bf, data=data, family=this_family, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = targets::tar_seed_get())
   
 }
 
@@ -614,7 +567,7 @@ fit_main_models_OSTE = function(y, x, family, data, n_cores = 4, n_threads = 4, 
     stop("Family not specified or not recognized")
   }
   
-  brm( this_bf, data=data, family=this_family, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = tar_seed_get())
+  brm( cores = getOption("mc.cores", 4L), this_bf, data=data, family=this_family, iter=iterations, control = list(adapt_delta = adapt_delta), save_pars = save_pars(all = TRUE), refresh = 0, seed = targets::tar_seed_get())
   
 }
 
@@ -662,229 +615,17 @@ fit_main_models_cyclic_season <- function(y, x = character(0), family, data, k =
   }
 
   brm(
-    this_bf,
+    cores = getOption("mc.cores", 4L), this_bf,
     data = data,
     family = this_family,
     iter = iterations,
     control = list(adapt_delta = adapt_delta),
     save_pars = save_pars(all = TRUE),
     refresh = 0,
-    seed = tar_seed_get(),
+    seed = targets::tar_seed_get(),
     knots = list(sea_day = period)
   )
 }
-
-
-# ============================================================================
-# EXPERIMENTAL / MANUAL-ONLY HELPERS
-# ----------------------------------------------------------------------------
-# The functions below are exploratory utilities for tuning an alternative MWI
-# from fitted HTW models. They are NOT used by the default targets pipeline
-# unless called explicitly in an interactive session or script.
-# ============================================================================
-
-
-#' Trapezoid suitability curve
-#'
-#' @param x Numeric vector.
-#' @param a,b,c,d Ordered breakpoints with `a <= b <= c <= d`.
-#' @return Numeric suitability in [0,1].
-trapezoid_suitability <- function(x, a, b, c, d) {
-  y <- ifelse(
-    x <= a | x >= d,
-    0,
-    ifelse(
-      x < b,
-      (x - a) / pmax(b - a, 1e-8),
-      ifelse(x <= c, 1, (d - x) / pmax(d - c, 1e-8))
-    )
-  )
-  pmin(pmax(y, 0), 1)
-}
-
-
-#' Wind suitability via soft threshold
-#'
-#' @param x Numeric wind-speed vector.
-#' @param w0 Midpoint where suitability is 0.5.
-#' @param k Positive slope parameter; larger values create a sharper drop.
-#' @return Numeric suitability in [0,1].
-wind_logistic_suitability <- function(x, w0, k) {
-  pmin(pmax(1 / (1 + exp(k * (x - w0))), 0), 1)
-}
-
-
-#' Normalize numeric vector to [0,1]
-#'
-#' @param x Numeric vector.
-#' @return Numeric vector in [0,1].
-normalize01 <- function(x) {
-  rng <- range(x, na.rm = TRUE)
-  if (!all(is.finite(rng)) || diff(rng) < 1e-10) {
-    return(rep(1, length(x)))
-  }
-  (x - rng[1]) / diff(rng)
-}
-
-
-#' Fit trapezoid curve parameters to a target response shape
-#'
-#' @param x Numeric predictor grid.
-#' @param y Numeric target response on [0,1].
-#' @return Named list with fitted `a,b,c,d` and fit diagnostics.
-fit_trapezoid_curve <- function(x, y) {
-  ok <- is.finite(x) & is.finite(y)
-  x <- x[ok]
-  y <- y[ok]
-  x_rng <- range(x)
-  start <- as.numeric(stats::quantile(x, probs = c(0.1, 0.3, 0.7, 0.9), na.rm = TRUE))
-
-  objective <- function(par) {
-    penalty <- 0
-    if (par[1] > par[2]) penalty <- penalty + (par[1] - par[2])^2 * 1e6
-    if (par[2] > par[3]) penalty <- penalty + (par[2] - par[3])^2 * 1e6
-    if (par[3] > par[4]) penalty <- penalty + (par[3] - par[4])^2 * 1e6
-    pred <- trapezoid_suitability(x, par[1], par[2], par[3], par[4])
-    mean((y - pred)^2) + penalty
-  }
-
-  opt <- optim(
-    par = start,
-    fn = objective,
-    method = "L-BFGS-B",
-    lower = rep(x_rng[1], 4),
-    upper = rep(x_rng[2], 4)
-  )
-
-  p <- sort(opt$par)
-  pred <- trapezoid_suitability(x, p[1], p[2], p[3], p[4])
-  list(
-    a = p[1],
-    b = p[2],
-    c = p[3],
-    d = p[4],
-    rmse = sqrt(mean((y - pred)^2)),
-    converged = opt$convergence == 0
-  )
-}
-
-
-#' Fit logistic wind curve parameters to a target response shape
-#'
-#' @param x Numeric predictor grid.
-#' @param y Numeric target response on [0,1].
-#' @return Named list with fitted `w0,k` and fit diagnostics.
-fit_wind_logistic_curve <- function(x, y) {
-  ok <- is.finite(x) & is.finite(y)
-  x <- x[ok]
-  y <- y[ok]
-  x_rng <- range(x)
-  start <- c(stats::median(x, na.rm = TRUE), log(1 / max(stats::sd(x, na.rm = TRUE), 1e-6)))
-
-  objective <- function(par) {
-    w0 <- par[1]
-    k <- exp(par[2])
-    pred <- wind_logistic_suitability(x, w0, k)
-    mean((y - pred)^2)
-  }
-
-  opt <- optim(
-    par = start,
-    fn = objective,
-    method = "L-BFGS-B",
-    lower = c(x_rng[1], -8),
-    upper = c(x_rng[2], 8)
-  )
-
-  w0 <- opt$par[1]
-  k <- exp(opt$par[2])
-  pred <- wind_logistic_suitability(x, w0, k)
-  list(
-    w0 = w0,
-    k = k,
-    rmse = sqrt(mean((y - pred)^2)),
-    converged = opt$convergence == 0
-  )
-}
-
-
-#' Extract and normalize a conditional-effect curve from a fitted brms model
-#'
-#' @param model A fitted `brmsfit` model.
-#' @param variable Predictor name to extract.
-#' @return Tibble with columns `x`, `eta`, and `target` (normalized to [0,1]).
-extract_partial_curve <- function(model, variable) {
-  ce <- conditional_effects(model, effects = variable)[[1]] %>% as_tibble()
-  tibble(
-    x = ce[[variable]],
-    eta = ce$estimate__,
-    target = normalize01(ce$estimate__)
-  )
-}
-
-
-#' [EXPERIMENTAL] Tune MWI component functions from a fitted 3-variable weather model
-#'
-#' Uses conditional effects from a fitted model to estimate data-driven
-#' component functions for humidity, temperature, and wind. Humidity and
-#' temperature are fit with trapezoid curves; wind is fit with a logistic curve.
-#'
-#' @param model A fitted `brmsfit` object from a model containing all 3 weather
-#'   variables.
-#' @param rh_var Name of the humidity predictor in `model`.
-#' @param temp_var Name of the temperature predictor in `model`.
-#' @param wind_var Name of the wind predictor in `model`.
-#' @return A list with fitted parameters, extracted curves, and
-#'   `make_mwi_tuned(rh, temp, wind)`.
-tune_mwi_from_htw_model <- function(model, rh_var, temp_var, wind_var) {
-  rh_curve <- extract_partial_curve(model, rh_var)
-  temp_curve <- extract_partial_curve(model, temp_var)
-  wind_curve <- extract_partial_curve(model, wind_var)
-
-  rh_fit <- fit_trapezoid_curve(rh_curve$x, rh_curve$target)
-  temp_fit <- fit_trapezoid_curve(temp_curve$x, temp_curve$target)
-  wind_fit <- fit_wind_logistic_curve(wind_curve$x, wind_curve$target)
-
-  make_mwi_tuned <- function(rh, temp, wind) {
-    fh <- trapezoid_suitability(rh, rh_fit$a, rh_fit$b, rh_fit$c, rh_fit$d)
-    ft <- trapezoid_suitability(temp, temp_fit$a, temp_fit$b, temp_fit$c, temp_fit$d)
-    fw <- wind_logistic_suitability(wind, wind_fit$w0, wind_fit$k)
-    fh * ft * fw
-  }
-
-  list(
-    params = list(
-      FH = rh_fit,
-      FT = temp_fit,
-      FW = wind_fit
-    ),
-    curves = list(
-      RH = rh_curve,
-      TEMP = temp_curve,
-      WIND = wind_curve
-    ),
-    make_mwi_tuned = make_mwi_tuned
-  )
-}
-
-
-#' [EXPERIMENTAL] Add tuned MWI values to a data frame
-#'
-#' @param data Data frame with raw RH, temperature, and wind variables.
-#' @param tuned_output Result from `tune_mwi_from_htw_model()`.
-#' @param rh_var,temp_var,wind_var Column names in `data`.
-#' @param new_var_name Name of new tuned MWI column.
-#' @return Input data frame with added tuned MWI column.
-add_tuned_mwi <- function(data, tuned_output, rh_var, temp_var, wind_var, new_var_name = "mwi_tuned") {
-  data[[new_var_name]] <- tuned_output$make_mwi_tuned(
-    rh = data[[rh_var]],
-    temp = data[[temp_var]],
-    wind = data[[wind_var]]
-  )
-  data
-}
-
-# End of experimental tuning helpers.
 
 
 #' Load mosquito trap counts from Excel workbook
@@ -983,30 +724,99 @@ make_trap_location_map <- function(traps, path, zoom = 14,
   c(path, html)
 }
 
-#' Prepare model-ready weather and trap dataset
+#' Local-time interval covering whole study days
 #'
-#' Joins trap count data with multiple weather data sources, computes derived
-#' mosquito weather indices, and aggregates environmental covariates over trap
-#' deployment periods.
+#' `lubridate::interval()` on two Dates runs from 00:00 UTC to 00:00 UTC, which
+#' in Athens drops the first two or three hours of the first day and keeps only
+#' the first two or three of the last. This runs from local midnight at the
+#' start of `first` to the last second of `last`.
+#'
+#' @param first,last Dates.
+#' @return A lubridate interval in Europe/Athens.
+study_interval_local = function(first, last){
+  interval(force_tz(as_datetime(first), "Europe/Athens"),
+           force_tz(as_datetime(last + 1), "Europe/Athens") - 1)
+}
+
+#' ERA5-Land grid point for the trap locations
+#'
+#' Returns the grid point nearest the centroid of the traps among those that
+#' have data. ERA5-Land is undefined over the sea, so the nearest point by
+#' distance alone can be empty: here the 37.9 N row lies in the Saronic Gulf.
+#'
+#' @param trap_location_data `sf` object of trap locations (WGS84).
+#' @param file An ERA5-Land 2 m temperature extract with `latitude`,
+#'   `longitude` and `t2m` columns.
+#' @return A one-row tibble with `latitude` and `longitude`.
+era5_cell_for_traps = function(trap_location_data, file = "data/proc/era5_2m_temperature.csv.gz"){
+  xy = st_coordinates(trap_location_data)
+  center_lon = mean(xy[, "X"])
+  center_lat = mean(xy[, "Y"])
+  points = fread(file) %>% as_tibble() %>% filter(!is.na(t2m)) %>% distinct(latitude, longitude)
+  points %>%
+    mutate(distance = sqrt(((longitude - center_lon) * cos(center_lat * pi / 180))^2 + (latitude - center_lat)^2)) %>%
+    slice_min(distance, n = 1, with_ties = FALSE) %>%
+    dplyr::select(latitude, longitude)
+}
+
+#' Time zone of the HOBO logger clocks
+#'
+#' The loggers keep a fixed UTC+3 clock with no daylight saving: every export is
+#' headed "Date Time, GMT+03:00". `"Etc/GMT-3"` is that zone in POSIX notation,
+#' whose sign is inverted. Readings must be interpreted in it and only then
+#' converted to local time; reading them directly as Europe/Athens puts winter
+#' readings an hour late, and reading them as UTC puts them three hours late.
+hobo_logger_tz = "Etc/GMT-3"
+
+#' Logger timestamps from a HOBO CSV export, as Europe/Athens times
+#'
+#' @param x Character timestamps as exported, e.g. "08/08/18 03:00:00 PM".
+#' @return POSIXct in Europe/Athens.
+hobo_csv_time = function(x){
+  with_tz(as_datetime(x, format = "%m/%d/%y %I:%M:%S %p", tz = hobo_logger_tz), "Europe/Athens")
+}
+
+#' Logger timestamps from a HOBO Excel export, as Europe/Athens times
+#'
+#' `readxl` returns the logger's clock time labelled as UTC; this relabels it
+#' with the logger's actual zone before converting.
+#'
+#' @param x POSIXct as returned by `readxl::read_excel()`.
+#' @return POSIXct in Europe/Athens.
+hobo_xlsx_time = function(x){
+  with_tz(force_tz(x, hobo_logger_tz), "Europe/Athens")
+}
+
+#' Weather inputs for the analysis
+#'
+#' Loads and processes every weather source (ERA5-Land hourly reanalysis, the
+#' on-site HOBO loggers, the Helix station series and the NOA station series)
+#' and computes the hourly index and its daily summaries. Returns the
+#' intermediate tables as a list, so the pipeline can expose them as targets.
 #'
 #' @param trap_data Output of `load_trap_data()`.
 #' @param trap_location_data Output of `load_trap_location_data()`.
 #' @param file_helix_data Path to the Helix weather station CSV file.
-#' @return Tibble suitable for downstream modeling.
-prepare_data = function(trap_data, trap_location_data, file_helix_data){
+#' @param input_files Paths of the other raw inputs read here (ERA5 extracts,
+#'   logger exports, NOA station files). Not used directly; passing them from
+#'   file targets makes the pipeline rerun when any of them changes.
+#' @return A named list of tibbles (and `study_dates`).
+prepare_weather_inputs = function(trap_data, trap_location_data, file_helix_data, input_files = NULL){
   
   study_date_range = range(c(trap_data$start_date,  trap_data$end_date))
   
   study_dates = seq.Date(from=study_date_range[1], to=study_date_range[2], by="day")
   
-  study_date_range_interval = interval(study_date_range[1], study_date_range[2], tzone = "Europe/Athens")
+  study_date_range_interval = study_interval_local(study_date_range[1], study_date_range[2])
   
   # min(D$trapping_effort, na.rm=TRUE)
   # max(D$trapping_effort, na.rm=TRUE)
   
   
-  center_lon = mean(st_coordinates(trap_location_data)[, 'X']) 
-  center_lat = mean(st_coordinates(trap_location_data)[, 'Y']) 
+  # The ERA5-Land grid point nearest the traps that has data. (This was
+  # previously hard-coded to 38.0 N, 23.6 E, whose grid square contains none of
+  # the traps; see era5_cell_for_traps().)
+  era5_cell = era5_cell_for_traps(trap_location_data)
   
   # st_coordinates(trap_location_data)
   
@@ -1036,8 +846,17 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   these_names[1] = "date"
   
   these_types = "Ddddddddddddcd"
+
+  # Caution: the file has no header, and the column names above are inferred.
+  # The humidity, pressure and wind columns behave like daily mean/max/min, but
+  # the three temperature columns never differ by more than 0.3 C over the
+  # study period, so "temp_max" is effectively a daily mean temperature, not a
+  # daily maximum. The Helix index below is therefore FT(mean temperature) x
+  # FH(max humidity) x FW(max wind). For a clean test of computing the index
+  # from daily summaries, see the era5_aggfirst_* variables below, which use
+  # the same source and grid cell as the hourly index.
   
-  helix = read_csv(file_helix_data, col_names = these_names, col_types = these_types, na="---") %>% mutate(FT_max_helix = make_FT(temp_max_helix), FH_max_helix = make_FH(rh_max_helix), FW_max_helix = make_FW(windspeed_max_helix), mwi_max_helix = FT_max_helix*FH_max_helix*FW_max_helix ) %>% filter(date %within% study_date_range_interval)
+  helix = read_csv(file_helix_data, col_names = these_names, col_types = these_types, na="---") %>% mutate(FT_max_helix = make_FT(temp_max_helix), FH_max_helix = make_FH(rh_max_helix), FW_max_helix = make_FW(windspeed_max_helix), mwi_max_helix = FT_max_helix*FH_max_helix*FW_max_helix ) %>% filter(date >= study_date_range[1], date <= study_date_range[2])
   
   helix$wind_direction_c_helix = NULL
   
@@ -1047,16 +866,10 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   
   these_variables = c("2m_dewpoint_temperature", "2m_temperature", "10m_u_component_of_wind", "10m_v_component_of_wind", "surface_pressure", "total_precipitation")
   
-  # for debugging
-  # for(this_variable in these_variables){
-  # fread(file = paste0("data/proc/era5_", this_variable, ".csv.gz")) %>% as_tibble() %>% filter(abs(longitude-23.6)<=.001, abs(latitude-38)<=.001) %>% dplyr::select(-step, -number, -surface, -time) %>% pivot_longer(cols = -c(valid_time, latitude, longitude), names_to = "variable") %>% pull(variable) %>% unique() %>% print()
-  # }
-  # this_variable = these_variables[6]
-  # test =  fread(file = paste0("data/proc/era5_", this_variable, ".csv.gz")) %>% as_tibble() %>% filter(abs(longitude-23.6)<=.001, abs(latitude-38)<=.001) %>% dplyr::select(-step, -number, -surface, -time) %>% pivot_longer(cols = -c(valid_time, latitude, longitude), names_to = "variable")
   
   
   weather_era5_long = bind_rows(lapply(these_variables, function(this_variable){
-    fread(file = paste0("data/proc/era5_", this_variable, ".csv.gz")) %>% as_tibble() %>% filter(abs(longitude-23.6)<=.001, abs(latitude-38)<=.001) %>% dplyr::select(-step, -number, -surface, -time) %>% pivot_longer(cols = -c(valid_time, latitude, longitude), names_to = "variable") %>% filter(!is.na(value))
+    fread(file = paste0("data/proc/era5_", this_variable, ".csv.gz")) %>% as_tibble() %>% filter(abs(longitude - era5_cell$longitude) <= .001, abs(latitude - era5_cell$latitude) <= .001) %>% dplyr::select(-step, -number, -surface, -time) %>% pivot_longer(cols = -c(valid_time, latitude, longitude), names_to = "variable") %>% filter(!is.na(value))
   })) 
   
   # double checking that each row is distinct
@@ -1085,13 +898,11 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
       FH = make_FH(relative_humidity), 
       FT = make_FT(temp_c), 
       mwi = FT*FH*FW,
+      fhft = FT*FH,
       valid_time = with_tz(valid_time, "Europe/Athens")) %>% filter(valid_time %within% study_date_range_interval)
   
-  weather_era5_hourly %>% pivot_longer(cols = -valid_time, names_to = "variable", values_to = "value") %>% ggplot(aes(x = valid_time, y = value)) + geom_line() + facet_grid(variable~., scale = "free")
   
-  ggplot(weather_era5_hourly, aes(x = valid_time, y =windspeed_kmph)) + geom_line()+ geom_abline(intercept = 6*3.6, slope = 0, color = "red")
   
-  ggplot(weather_era5_hourly, aes(x = valid_time, y =FW)) + geom_line() 
   
   # taking means of sundata across traps since they are almost the same; this way we can merge with era5 data
   sundata_means = sundata %>% group_by(date) %>% summarise(sunrise = mean(sunrise), sunset = mean(sunset))
@@ -1105,46 +916,56 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   
   era5_daily_long = weather_era5_hourly %>% mutate(date = as_date(valid_time)) %>% pivot_longer(cols = -c(date, valid_time), names_to = "variable", values_to = "value") %>% group_by(date, variable) %>% summarise(sum = sum(value), mean = mean(value), min = min(value), max = max(value), .groups = "drop")
   
-  era5_daily_long %>% pivot_longer(cols = -c(date, variable)) %>% filter(name != "sum") %>% ggplot(aes(x = date, y = value)) + geom_line() + facet_grid(variable~name, scale = "free")
   
   era5_daily = era5_daily_long %>% pivot_longer(cols = -c(date, variable)) %>% pivot_wider(id_cols = date, names_from = c(variable, name), values_from = value, names_prefix = "era5_") %>% left_join(era5_albotime_daily, by="date") %>% left_join(era5_daylight_daily, by = "date")
+
+  # The index computed the wrong way round, from weather already summarised to
+  # the day: FT, FH and FW of the daily maximum (or mean, or minimum) of each
+  # weather variable. Same source and grid cell as the hourly index, so the only
+  # difference is the order of operations.
+  era5_daily = era5_daily %>% mutate(
+    era5_aggfirst_mwi_max = make_FT(era5_temp_c_max) * make_FH(era5_relative_humidity_max) * make_FW(era5_windspeed_kmph_max),
+    era5_aggfirst_mwi_mean = make_FT(era5_temp_c_mean) * make_FH(era5_relative_humidity_mean) * make_FW(era5_windspeed_kmph_mean),
+    era5_aggfirst_mwi_min = make_FT(era5_temp_c_min) * make_FH(era5_relative_humidity_min) * make_FW(era5_windspeed_kmph_min)
+  )
   
   # TODO idea: make wide hourly weather - i.e. each column is the reading for a different hour of the day
   
   # loading trap weather sensor data ####
   
-  BG_2_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_2_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363442)` = col_skip(), `Coupler Attached (LGR S/N: 20363442)` = col_skip(),`Host Connected (LGR S/N: 20363442)` = col_skip(), `End Of File (LGR S/N: 20363442)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = as_datetime(date_time, "%m/%d/%y %I:%M:%S %p", tz = "Europe/Athens"), trap_name = "BG_2_T_2")
+  BG_2_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_2_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363442)` = col_skip(), `Coupler Attached (LGR S/N: 20363442)` = col_skip(),`Host Connected (LGR S/N: 20363442)` = col_skip(), `End Of File (LGR S/N: 20363442)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = hobo_csv_time(date_time), trap_name = "BG_2_T_2")
   
-  BG_2_b_hobo_1_1_19 = read_excel("data/raw/traps/BG_2_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_2_T_2") 
-  
-  tz(BG_2_b_hobo_1_1_19$date_time) = "Europe/Athens"
-  
-  BG_2_c_hobo_5_10_19_8_4_2020 = read_excel("data/raw/traps/BG_2_c_hobo_5_10_19 8_4_2020.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_2_T_2") 
-  
-  tz(BG_2_c_hobo_5_10_19_8_4_2020$date_time) = "Europe/Athens"
-  
-  BG_3_a_hobo_8_8_2018_19_12_2018 <- read_csv("data/raw/traps/BG_3_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363443)` = col_skip(), `Coupler Attached (LGR S/N: 20363443)` = col_skip(),`Host Connected (LGR S/N: 20363443)` = col_skip(), `End Of File (LGR S/N: 20363443)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)") %>% mutate(date_time = as_datetime(date_time, "%m/%d/%y %I:%M:%S %p", tz = "Europe/Athens"), trap_name = "BG_3_T_3")
-  
-  BG_3_b_hobo_1_1_19_10_10_19_ = read_excel("data/raw/traps/BG_3_b_hobo_1_1_19 10_10_19..xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_3_T_3") 
+  BG_2_b_hobo_1_1_19 = read_excel("data/raw/traps/BG_2_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_2_T_2") 
   
   
-  BG_4_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_4_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363444)` = col_skip(), `Coupler Attached (LGR S/N: 20363444)` = col_skip(),`Host Connected (LGR S/N: 20363444)` = col_skip(), `End Of File (LGR S/N: 20363444)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = as_datetime(date_time, "%m/%d/%y %I:%M:%S %p", tz = "Europe/Athens"), trap_name = "BG_4_M_1")
+  BG_2_c_hobo_5_10_19_8_4_2020 = read_excel("data/raw/traps/BG_2_c_hobo_5_10_19 8_4_2020.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363442, SEN S/N: 20363442, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_2_T_2") 
   
   
-  BG_4_b_hobo_1_1_19_10_10_19 = read_excel("data/raw/traps/BG_4_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_4_M_1") 
+  BG_3_a_hobo_8_8_2018_19_12_2018 <- read_csv("data/raw/traps/BG_3_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363443)` = col_skip(), `Coupler Attached (LGR S/N: 20363443)` = col_skip(),`Host Connected (LGR S/N: 20363443)` = col_skip(), `End Of File (LGR S/N: 20363443)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)") %>% mutate(date_time = hobo_csv_time(date_time), trap_name = "BG_3_T_3")
   
-  BG_4_c_hobo_5_10_19_8_4_2020 = read_excel("data/raw/traps/BG_4_c_hobo_5_10_19 8_4_2020.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_4_M_1") 
+  BG_3_b_hobo_1_1_19_10_10_19_ = read_excel("data/raw/traps/BG_3_b_hobo_1_1_19 10_10_19..xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363443, SEN S/N: 20363443, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_3_T_3") 
   
   
-  BG_5_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_5_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363431)` = col_skip(), `Coupler Attached (LGR S/N: 20363431)` = col_skip(),`Host Connected (LGR S/N: 20363431)` = col_skip(), `End Of File (LGR S/N: 20363431)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = as_datetime(date_time, "%m/%d/%y %I:%M:%S %p", tz = "Europe/Athens"), trap_name = "BG_5_M_2")
+  BG_4_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_4_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363444)` = col_skip(), `Coupler Attached (LGR S/N: 20363444)` = col_skip(),`Host Connected (LGR S/N: 20363444)` = col_skip(), `End Of File (LGR S/N: 20363444)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = hobo_csv_time(date_time), trap_name = "BG_4_M_1")
   
-  BG_5_b_hobo_1_1_19_10_10_19 = read_excel("data/raw/traps/BG_5_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_5_M_2") 
   
-  BG_5_c_hobo_5_10_19_8_4_2020_ = read_excel("data/raw/traps/BG_5_c_ hobo_5_10_19 8_4_2020..xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = as_datetime(date_time), trap_name = "BG_5_M_2") 
+  BG_4_b_hobo_1_1_19_10_10_19 = read_excel("data/raw/traps/BG_4_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_4_M_1") 
+  
+  BG_4_c_hobo_5_10_19_8_4_2020 = read_excel("data/raw/traps/BG_4_c_hobo_5_10_19 8_4_2020.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363444, SEN S/N: 20363444, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_4_M_1") 
+  
+  
+  BG_5_a_hobo_8_8_2018_19_12_2018 = read_csv("data/raw/traps/BG_5_a_hobo_8.8.2018_19.12.2018.csv", col_types = cols(`#` = col_skip(), `Coupler Detached (LGR S/N: 20363431)` = col_skip(), `Coupler Attached (LGR S/N: 20363431)` = col_skip(),`Host Connected (LGR S/N: 20363431)` = col_skip(), `End Of File (LGR S/N: 20363431)` = col_skip()), skip = 1) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = hobo_csv_time(date_time), trap_name = "BG_5_M_2")
+  
+  BG_5_b_hobo_1_1_19_10_10_19 = read_excel("data/raw/traps/BG_5_b_hobo_1_1_19 10_10_19.xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_5_M_2") 
+  
+  BG_5_c_hobo_5_10_19_8_4_2020_ = read_excel("data/raw/traps/BG_5_c_ hobo_5_10_19 8_4_2020..xlsx", skip=1, col_types = c("skip", "date", "numeric", "numeric", rep("skip", 4))) %>% rename(date_time = "Date Time, GMT+03:00", temp_c = "Temp, °C (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)", RH_perc = "RH, % (LGR S/N: 20363431, SEN S/N: 20363431, LBL: 100)") %>% mutate(date_time = hobo_xlsx_time(date_time), trap_name = "BG_5_M_2") 
   
   
   
-  hobos = bind_rows(BG_2_c_hobo_5_10_19_8_4_2020, BG_2_b_hobo_1_1_19, BG_2_a_hobo_8_8_2018_19_12_2018, BG_3_a_hobo_8_8_2018_19_12_2018, BG_3_b_hobo_1_1_19_10_10_19_, BG_4_a_hobo_8_8_2018_19_12_2018, BG_4_b_hobo_1_1_19_10_10_19, BG_4_c_hobo_5_10_19_8_4_2020, BG_5_a_hobo_8_8_2018_19_12_2018, BG_5_b_hobo_1_1_19_10_10_19, BG_5_c_hobo_5_10_19_8_4_2020_) %>% mutate(date = as_date(date_time), time = hms::as_hms(date_time)) %>% filter(date_time %within% study_date_range_interval) %>% mutate(RH_perc = if_else(RH_perc < hobo_rh_min_valid, NA_real_, RH_perc))
+  hobos = bind_rows(BG_2_c_hobo_5_10_19_8_4_2020, BG_2_b_hobo_1_1_19, BG_2_a_hobo_8_8_2018_19_12_2018, BG_3_a_hobo_8_8_2018_19_12_2018, BG_3_b_hobo_1_1_19_10_10_19_, BG_4_a_hobo_8_8_2018_19_12_2018, BG_4_b_hobo_1_1_19_10_10_19, BG_4_c_hobo_5_10_19_8_4_2020, BG_5_a_hobo_8_8_2018_19_12_2018, BG_5_b_hobo_1_1_19_10_10_19, BG_5_c_hobo_5_10_19_8_4_2020_) %>%
+    # The b and c exports of each logger overlap by several days; keep one copy.
+    distinct(trap_name, date_time, .keep_all = TRUE) %>%
+    mutate(date = as_date(date_time), time = hms::as_hms(date_time)) %>% filter(date_time %within% study_date_range_interval) %>% mutate(RH_perc = if_else(RH_perc < hobo_rh_min_valid, NA_real_, RH_perc))
   
 #  ggplot(hobos, aes(x=date_time, y=RH_perc)) + geom_line() + facet_grid(trap_name~.)
   
@@ -1166,7 +987,7 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
     
     max_days = as.integer(days_in_month(this_date))
     
-    D = read_table(paste0("data/raw/weather/", this_month, " ", this_year, ".txt"), skip=11,n_max=max_days, col_names = c("DAY", "temp_mean",  "temp_high",   "time_temp_high",   "temp_low",    "time_temp_low",   "heat_deg_days",  "cool_deg_days",  "rain",  "wind_speed_ave", "wind_speed_high",   "time_wind_speed_high",    "wind_dom_direction")) %>% mutate(date = this_date + DAY - 1, FW_mean_meteo = make_FW(wind_speed_ave), FW_max_meteo = make_FW(wind_speed_high), FT_mean_meteo = make_FT(temp_mean), FT_max_meteo = make_FT(temp_high), FT_min_meteo = make_FT(temp_low)) %>% select(-DAY) %>% dplyr::select(date, temp_mean_meteo = temp_mean, temp_high_meteo = temp_high, temp_low_meteo = temp_low, rain_meteo = rain, wind_speed_ave_meteo = wind_speed_ave, wind_speed_high_meteo = wind_speed_high, FW_mean_meteo, FW_max_meteo, FT_mean_meteo, FT_max_meteo, FT_min_meteo)
+    D = read_table(paste0("data/raw/weather/", this_month, " ", this_year, ".txt"), skip=11,n_max=max_days, show_col_types = FALSE, col_names = c("DAY", "temp_mean",  "temp_high",   "time_temp_high",   "temp_low",    "time_temp_low",   "heat_deg_days",  "cool_deg_days",  "rain",  "wind_speed_ave", "wind_speed_high",   "time_wind_speed_high",    "wind_dom_direction")) %>% mutate(date = this_date + DAY - 1, FW_mean_meteo = make_FW(wind_speed_ave), FW_max_meteo = make_FW(wind_speed_high), FT_mean_meteo = make_FT(temp_mean), FT_max_meteo = make_FT(temp_high), FT_min_meteo = make_FT(temp_low)) %>% select(-DAY) %>% dplyr::select(date, temp_mean_meteo = temp_mean, temp_high_meteo = temp_high, temp_low_meteo = temp_low, rain_meteo = rain, wind_speed_ave_meteo = wind_speed_ave, wind_speed_high_meteo = wind_speed_high, FW_mean_meteo, FW_max_meteo, FT_mean_meteo, FT_max_meteo, FT_min_meteo)
     
   }))
   
@@ -1179,7 +1000,7 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   hobos_daylight_daily = hobos_sundata %>% filter(daylight) %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max_nasafe(value), min = min_nasafe(value), mean = mean_nasafe(value), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% pivot_wider(id_cols = c(date, trap_name), names_from = c(variable, name), values_from = value, names_prefix = "hobo_daylight_")
   
   
-  hobos_daily =  hobos %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max_nasafe(value), min = min_nasafe(value), mean = mean_nasafe(value), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% pivot_wider(id_cols = c(date, trap_name), names_from = c(variable, name), values_from = value, names_prefix = "hobo_") %>% left_join(hobos_albotime_daily, by = c("date", "trap_name")) %>% left_join(hobos_daylight_daily, by = c("date", "trap_name")) 
+  hobos_daily =  hobos %>% dplyr::select(date_time, trap_name, temp_c, RH_perc) %>% mutate(valid = as.numeric(!is.na(RH_perc) & !is.na(temp_c)), FH = make_FH(RH_perc), FT = make_FT(temp_c), valid_time = round(date_time, units = "hour")) %>% left_join(weather_era5_hourly %>% dplyr::select(valid_time, FW), by = "valid_time") %>% dplyr::select(-valid_time)  %>% mutate(mwi = FW*FH*FT) %>% pivot_longer(cols = -c(date_time, trap_name), names_to = "variable", values_to = "value") %>% mutate(date = as_date(date_time)) %>% group_by(date, trap_name, variable) %>% summarise(max = max_nasafe(value), min = min_nasafe(value), mean = mean_nasafe(value), sum = sum(value, na.rm=TRUE), .groups = "drop") %>% pivot_longer(cols = -c(date, trap_name, variable)) %>% pivot_wider(id_cols = c(date, trap_name), names_from = c(variable, name), values_from = value, names_prefix = "hobo_") %>% left_join(hobos_albotime_daily, by = c("date", "trap_name")) %>% left_join(hobos_daylight_daily, by = c("date", "trap_name")) 
   
 #  ggplot(hobos_daily, aes(x=hobo_mwi_mean, y=hobo_albotime_mwi_mean)) + geom_point()
   
@@ -1193,7 +1014,43 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   # hobos_sundata %>% filter(date==as_date("2019-10-31"), trap_name %in% c("BG_2_T_2", "BG_4_T_1", "BG_5_T_2" )) %>% View()
   
   # TODO related to the above comment, consider whether using na.rm in the summary function is appropriate or whether we should be eliminating some additional records that might be biased based on the missing hours.
-  
+
+  list(
+    study_dates = study_dates,
+    sundata = sundata,
+    helix = helix,
+    meteo = meteo,
+    weather_era5_hourly = weather_era5_hourly,
+    weather_era5_hourly_sundata = weather_era5_hourly_sundata,
+    era5_daily = era5_daily,
+    era5_albotime_daily = era5_albotime_daily,
+    era5_daylight_daily = era5_daylight_daily,
+    hobos = hobos,
+    hobos_sundata = hobos_sundata,
+    hobos_daily = hobos_daily
+  )
+}
+
+#' Prepare model-ready weather and trap dataset
+#'
+#' Aggregates the daily weather summaries over each trap deployment period and
+#' joins them to the trap counts.
+#'
+#' @param trap_data Output of `load_trap_data()`.
+#' @param weather_inputs Output of `prepare_weather_inputs()`.
+#' @param hobo_min_coverage Minimum fraction of expected logger readings a
+#'   trap-period needs for its logger-based summaries to be kept (default 0.8).
+#'   Use 0 to keep every period.
+#' @return Tibble suitable for downstream modeling.
+prepare_data = function(trap_data, weather_inputs, hobo_min_coverage = 0.8){
+
+  study_dates = weather_inputs$study_dates
+  sundata = weather_inputs$sundata
+  meteo = weather_inputs$meteo
+  helix = weather_inputs$helix
+  hobos_daily = weather_inputs$hobos_daily
+  era5_daily = weather_inputs$era5_daily
+
   # merging data ####
   
   trap_dates = expand_grid(date = study_dates, trap_name = unique(trap_data$trap_name)) %>% mutate(month_int = as.integer(month(date)), year = year(date))
@@ -1256,8 +1113,22 @@ prepare_data = function(trap_data, trap_location_data, file_helix_data){
   # adding season day
   result = result %>% mutate(sea_day = yday(end_date))
   
+  # Logger coverage. A trap-period's logger summaries are only as good as the
+  # readings behind them: a period whose logger was installed on its last
+  # afternoon would otherwise be summarised by a few hours of data. The loggers
+  # read every 30 minutes, and a trap-period's weather window runs over both
+  # service days (end_date - start_date + 1 days). Below `hobo_min_coverage`,
+  # every logger-based summary for the period is set to missing.
+  result = result %>% mutate(
+    hobo_coverage = sum_hobo_valid_sum / (48 * (as.numeric(end_date - start_date) + 1))
+  )
+  if (hobo_min_coverage > 0) {
+    low_coverage = is.na(result$hobo_coverage) | result$hobo_coverage < hobo_min_coverage
+    hobo_cols = setdiff(grep("hobo", names(result), value = TRUE), "hobo_coverage")
+    result[low_coverage, hobo_cols] = NA
+  }
+
   return(result)
-  
 }
 
 # ---------------------------------------------------------------------------
@@ -1408,7 +1279,10 @@ plot_index_coef_heatmap <- function(index_coef_summary, mwi_only = FALSE) {
 #' @param delta_df A tibble with columns `index`, `outcome`, `family`,
 #'   `aggregation`, `window`, `seasonality`, `delta_elpd`, and `se_diff`.
 #' @return A `ggplot` object.
-plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE) {
+plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE, high_k_threshold = 1) {
+  if (!"se_diff_cl" %in% names(delta_df)) delta_df$se_diff_cl <- NA_real_
+  if (!"n_high_k" %in% names(delta_df)) delta_df$n_high_k <- NA_integer_
+  if (!"max_rhat" %in% names(delta_df)) delta_df$max_rhat <- NA_real_
   fam_map <- c(negbinomial = "NB",
                zero_inflated_negbinomial = "ZINB",
                poisson = "P")
@@ -1430,7 +1304,14 @@ plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE) {
       species = factor(species, levels = c("Ae. albopictus", "Cx. pipiens", "Total")),
       index_sea = paste0(index, dplyr::if_else(seasonality == "Yes", " + sea", "")),
       index_sea = factor(index_sea, levels = sea_levels),
-      excludes_zero = abs(delta_elpd) > stats::qnorm(0.95) * se_diff
+      # Interval excludes zero, judged with the standard error clustered by
+      # collection period where it is available.
+      se_use = dplyr::coalesce(se_diff_cl, se_diff),
+      excludes_zero = abs(delta_elpd) > stats::qnorm(0.95) * se_use,
+      # Estimate not trustworthy: PSIS-LOO still unreliable after moment
+      # matching, or (leave-future-out cells) a refit that did not converge.
+      unreliable = (!is.na(n_high_k) & n_high_k >= high_k_threshold) |
+        (!is.na(max_rhat) & max_rhat > 1.05)
     )
 
   # Clip the colour scale to the non-Poisson range so smaller (but credible)
@@ -1445,6 +1326,11 @@ plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE) {
     geom_text(data = dplyr::filter(df, excludes_zero),
               aes(label = "*"), nudge_x = 0.3, nudge_y = 0.26,
               size = 5, fontface = "bold") +
+    # Unreliable estimate: Pareto k > 0.7 for at least `high_k_threshold`
+    # observations after moment matching, or a non-converged fit (R-hat > 1.05)
+    geom_text(data = dplyr::filter(df, unreliable),
+              aes(label = "\u2020"), nudge_x = -0.3, nudge_y = 0.26,
+              size = 3.2) +
     facet_grid(species ~ index_sea) +
     scale_fill_gradient2(
       low = "#d7301f", mid = "grey92", high = "#2c7fb8",
@@ -1463,7 +1349,9 @@ plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE) {
 #' Plots per-origin forward ΔELPD (index minus its matched baseline) as monthly
 #' bars, faceted by species. Works for either the seasonal-baseline results from
 #' [run_lfo_monthly()] or the null-baseline results from [run_lfo_monthly_flat()]
-#' (both share the `outcome`, `horizon_end`, `delta_elpd`, `se_diff` columns).
+#' (both share the `outcome`, `horizon_end`, `delta_elpd`, `se_diff_cl` columns).
+#' Error bars are +/- 1 SE of the monthly difference, clustered by collection
+#' period.
 #'
 #' @param lfo_df Per-origin LFO results tibble.
 #' @param ylab Y-axis label describing the baseline being compared against.
@@ -1482,7 +1370,7 @@ plot_lfo_bars <- function(lfo_df, ylab = "Forward \u0394ELPD", species_levels = 
     ggplot(aes(x = horizon_end, y = delta_elpd)) +
     geom_hline(yintercept = 0, color = "grey55") +
     geom_col(aes(fill = delta_elpd > 0)) +
-    geom_errorbar(aes(ymin = delta_elpd - se_diff, ymax = delta_elpd + se_diff),
+    geom_errorbar(aes(ymin = delta_elpd - se_diff_cl, ymax = delta_elpd + se_diff_cl),
                   width = 8, color = "grey30") +
     facet_wrap(~ Species, ncol = 1, scales = "free_y") +
     scale_fill_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "#d7301f"), guide = "none") +
@@ -1497,11 +1385,12 @@ plot_lfo_bars <- function(lfo_df, ylab = "Forward \u0394ELPD", species_levels = 
 #' ZINB, 24-h maximum): the gain in leave-one-out predictive accuracy (ΔELPD)
 #' from adding MWI to a null model and to a model that already contains a smooth
 #' seasonal term, for each species. Error bars are 90% intervals
-#' (ΔELPD ± 1.645·SE) and bars are coloured by species.
+#' (ΔELPD ± 1.645·SE, with the SE clustered by collection period) and bars are
+#' coloured by species.
 #'
 #' @param mwi_pairwise_loo_albo,mwi_pairwise_loo_cx Pairwise-LOO summary tibbles
 #'   with columns `outcome`, `family`, `window`, `aggregation`, `seasonality`,
-#'   `delta_elpd`, and `se_diff`.
+#'   `delta_elpd`, and `se_diff_cl`.
 #' @return A `ggplot` object.
 plot_mwi_vs_null_loo <- function(mwi_pairwise_loo_albo, mwi_pairwise_loo_cx) {
   z90 <- stats::qnorm(0.95)
@@ -1520,8 +1409,8 @@ plot_mwi_vs_null_loo <- function(mwi_pairwise_loo_albo, mwi_pairwise_loo_cx) {
       comparison = factor(comparison,
                           levels = c("MWI added to\nnull model",
                                      "MWI added to\nseasonal model")),
-      lower = delta_elpd - z90 * se_diff,
-      upper = delta_elpd + z90 * se_diff
+      lower = delta_elpd - z90 * se_diff_cl,
+      upper = delta_elpd + z90 * se_diff_cl
     )
 
   ggplot(df, aes(x = comparison, y = delta_elpd, fill = Species)) +

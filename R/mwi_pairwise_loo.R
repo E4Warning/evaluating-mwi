@@ -25,24 +25,6 @@ remove_terms_by_pattern <- function(x, term_pattern) {
 }
 
 
-#' Remove MWI predictors from a RHS specification
-#'
-#' @param x Character vector or scalar describing RHS terms joined with `+`.
-#' @return Character vector with the MWI terms removed.
-remove_mwi_terms <- function(x) {
-  remove_terms_by_pattern(x, "_mwi_")
-}
-
-
-#' Remove FHFT predictors from a RHS specification
-#'
-#' @param x Character vector or scalar describing RHS terms joined with `+`.
-#' @return Character vector with the FHFT terms removed.
-remove_fhft_terms <- function(x) {
-  remove_terms_by_pattern(x, "_fhft_")
-}
-
-
 #' Build pairwise full-vs-reduced comparison metadata
 #'
 #' @param model_table Model specification tibble with columns `name`, `x`,
@@ -219,14 +201,14 @@ fit_reduced_model <- function(y, x, family, data, term_pattern, iterations = 200
   }
 
   brm(
-    this_bf,
+    cores = getOption("mc.cores", 4L), this_bf,
     data = data,
     family = this_family,
     iter = iterations,
     control = list(adapt_delta = adapt_delta),
     save_pars = save_pars(all = TRUE),
     refresh = 0,
-    seed = tar_seed_get()
+    seed = targets::tar_seed_get()
   )
 }
 
@@ -299,6 +281,10 @@ summarize_pairwise_loo <- function(pair_table, full_loos, reduced_loos, full_mod
     if (!is.finite(se_diff)) {
       se_diff <- NA_real_
     }
+    se_diff_cl <- paired_elpd(
+      full_loos[[this_pair$full_loo_name]],
+      reduced_loos[[this_pair$reduced_loo_name]]
+    )$se_cl
 
     tibble(
       outcome = this_pair$y,
@@ -311,7 +297,14 @@ summarize_pairwise_loo <- function(pair_table, full_loos, reduced_loos, full_mod
       full_elpd = full_loos[[this_pair$full_loo_name]]$estimates["elpd_loo", "Estimate"],
       reduced_elpd = reduced_loos[[this_pair$reduced_loo_name]]$estimates["elpd_loo", "Estimate"],
       delta_elpd = delta_elpd,
-      se_diff = se_diff
+      se_diff = se_diff,
+      se_diff_cl = se_diff_cl,
+      # observations still above Pareto k 0.7 after moment matching, in the
+      # worse of the two models
+      n_high_k = max(
+        attr(full_loos[[this_pair$full_loo_name]], "pareto")[["n_high_after"]],
+        attr(reduced_loos[[this_pair$reduced_loo_name]], "pareto")[["n_high_after"]]
+      )
     )
   })) %>%
     mutate(
@@ -474,11 +467,15 @@ summarize_fhft_pairwise_holdout <- function(fhft_pair_table, full_holdout_scores
 #' Computes the population-level expected trap count at a low and a high value
 #' of the index (by default the 10th and 90th percentiles observed in the model
 #' data), holding trapping effort (and day-of-year, when present) at their
-#' medians and marginalizing over the trap random effects. Returns posterior
-#' medians and credible intervals for the expected counts, their absolute
-#' difference, and their ratio. The ratio is unstable and can be extremely large
-#' when the low-index expected count is near zero, so the absolute difference is
-#' usually the more interpretable summary.
+#' medians, for a typical trap: the trap random effects are set to zero
+#' (`re_formula = NA`), not averaged over. On the log link this is the expected
+#' count at the median trap; the mean over traps is larger by a factor of
+#' exp(sigma^2 / 2), where sigma is the trap-level standard deviation. That
+#' factor cancels in the ratio of the two counts but scales their difference.
+#' Returns posterior medians and credible intervals for the expected counts,
+#' their absolute difference, and their ratio. The ratio is unstable and can be
+#' extremely large when the low-index expected count is near zero, so the
+#' absolute difference is usually the more interpretable summary.
 #'
 #' @param model A fitted `brmsfit` count model containing exactly one MWI or
 #'   FHFT index predictor.
@@ -611,6 +608,35 @@ compare_pointwise_elpd <- function(index_model, baseline_model, data, index_loo 
 }
 
 
+#' Refit a brms model on new data, reproducibly, retrying once if it fails
+#'
+#' brms does not keep the seed a model was fitted with, so `update()` without
+#' one lets Stan seed itself from the clock and the refit is not reproducible.
+#' This always passes an explicit seed. If the refit does not converge (largest
+#' split R-hat above 1.05), it is repeated once with a different seed; a chain
+#' that has not converged is a failed computation, not a result.
+#'
+#' @param fit A fitted `brmsfit`.
+#' @param seed Integer seed for this refit.
+#' @param ... Passed to [stats::update()], e.g. `newdata` and `knots`.
+#' @return The refitted model, with attribute `retried` (`TRUE` if the first
+#'   attempt did not converge).
+update_reproducibly <- function(fit, seed, ...) {
+  refit <- function(s) {
+    stats::update(fit, ..., recompile = FALSE, refresh = 0,
+                  cores = getOption("mc.cores", 4L), seed = s)
+  }
+  out <- refit(seed)
+  retried <- FALSE
+  if (fit_diagnostics(out)[["max_rhat"]] > 1.05) {
+    out <- refit(seed + 100000L)
+    retried <- TRUE
+  }
+  attr(out, "retried") <- retried
+  out
+}
+
+
 #' Monthly leave-future-out (rolling-origin) forecast comparison
 #'
 #' Genuine forward evaluation: at each monthly origin the index model and a
@@ -634,6 +660,9 @@ compare_pointwise_elpd <- function(index_model, baseline_model, data, index_loo 
 #'   baseline difference with a paired standard error.
 run_lfo_monthly <- function(outcome, index_term, data, origins, family = "zero_inflated_negbinomial", k = 6, period = c(0.5, 366.5), iterations = 2000, adapt_delta = 0.98, min_train = 40) {
   ensure_pipeline_tempdir()
+  # `period` is the seasonal spline's period, passed as knots at every refit.
+  stopifnot(is.numeric(period), length(period) == 2)
+  base_seed <- targets::tar_seed_get()
 
   season_fit <- NULL
   index_fit <- NULL
@@ -654,13 +683,20 @@ run_lfo_monthly <- function(outcome, index_term, data, origins, family = "zero_i
       season_fit <- fit_main_models_cyclic_season(y = outcome, x = character(0), family = family, data = train, k = k, period = period, iterations = iterations, adapt_delta = adapt_delta)
       index_fit <- fit_main_models_cyclic_season(y = outcome, x = index_term, family = family, data = train, k = k, period = period, iterations = iterations, adapt_delta = adapt_delta)
     } else {
-      season_fit <- stats::update(season_fit, newdata = train, knots = list(sea_day = period), recompile = FALSE, refresh = 0)
-      index_fit <- stats::update(index_fit, newdata = train, knots = list(sea_day = period), recompile = FALSE, refresh = 0)
+      season_fit <- update_reproducibly(season_fit, seed = base_seed + i, newdata = train, knots = list(sea_day = period))
+      index_fit <- update_reproducibly(index_fit, seed = base_seed + 1000L + i, newdata = train, knots = list(sea_day = period))
     }
 
     season_score <- evaluate_holdout_log_score(season_fit, newdata = test)
     index_score <- evaluate_holdout_log_score(index_fit, newdata = test)
     pointwise_delta <- index_score$pointwise_elpd - season_score$pointwise_elpd
+    # Collection period of each held-out observation, for the clustered SE.
+    # (Not `period`, which is the spline's period and is used by update() at
+    # the next origin.)
+    obs_period <- paste(test$start_date, test$end_date)
+    stopifnot(length(obs_period) == length(pointwise_delta))
+    diag <- rbind(fit_diagnostics(season_fit), fit_diagnostics(index_fit))
+    n_retried <- sum(isTRUE(attr(season_fit, "retried")), isTRUE(attr(index_fit, "retried")))
 
     result_rows[[length(result_rows) + 1]] <- tibble::tibble(
       outcome = outcome,
@@ -673,7 +709,13 @@ run_lfo_monthly <- function(outcome, index_term, data, origins, family = "zero_i
       mean_elpd_season = season_score$mean_elpd,
       mean_elpd_index = index_score$mean_elpd,
       delta_elpd = sum(pointwise_delta),
-      se_diff = if (length(pointwise_delta) > 1) sqrt(length(pointwise_delta) * stats::var(pointwise_delta)) else NA_real_
+      se_diff = if (length(pointwise_delta) > 1) sqrt(length(pointwise_delta) * stats::var(pointwise_delta)) else NA_real_,
+      se_diff_cl = clustered_se(pointwise_delta, obs_period),
+      max_rhat = max(diag[, "max_rhat"]),
+      min_ess_bulk = min(diag[, "min_ess_bulk"]),
+      n_divergent = sum(diag[, "n_divergent"]),
+      n_retried = n_retried,
+      pointwise = list(tibble::tibble(period = obs_period, d = pointwise_delta))
     )
   }
 
@@ -702,6 +744,7 @@ run_lfo_monthly <- function(outcome, index_term, data, origins, family = "zero_i
 run_lfo_monthly_flat <- function(outcome, index_term, data, origins, family = "zero_inflated_negbinomial", iterations = 2000, adapt_delta = 0.98, min_train = 40) {
   ensure_pipeline_tempdir()
 
+  base_seed <- targets::tar_seed_get()
   null_fit <- NULL
   index_fit <- NULL
   result_rows <- list()
@@ -721,13 +764,17 @@ run_lfo_monthly_flat <- function(outcome, index_term, data, origins, family = "z
       null_fit <- fit_mwi_reduced_model(y = outcome, x = index_term, family = family, data = train, iterations = iterations, adapt_delta = adapt_delta)
       index_fit <- fit_main_models(y = outcome, x = index_term, family = family, data = train, iterations = iterations, adapt_delta = adapt_delta)
     } else {
-      null_fit <- stats::update(null_fit, newdata = train, recompile = FALSE, refresh = 0)
-      index_fit <- stats::update(index_fit, newdata = train, recompile = FALSE, refresh = 0)
+      null_fit <- update_reproducibly(null_fit, seed = base_seed + i, newdata = train)
+      index_fit <- update_reproducibly(index_fit, seed = base_seed + 1000L + i, newdata = train)
     }
 
     null_score <- evaluate_holdout_log_score(null_fit, newdata = test)
     index_score <- evaluate_holdout_log_score(index_fit, newdata = test)
     pointwise_delta <- index_score$pointwise_elpd - null_score$pointwise_elpd
+    obs_period <- paste(test$start_date, test$end_date)
+    stopifnot(length(obs_period) == length(pointwise_delta))
+    diag <- rbind(fit_diagnostics(null_fit), fit_diagnostics(index_fit))
+    n_retried <- sum(isTRUE(attr(null_fit, "retried")), isTRUE(attr(index_fit, "retried")))
 
     result_rows[[length(result_rows) + 1]] <- tibble::tibble(
       outcome = outcome,
@@ -740,13 +787,66 @@ run_lfo_monthly_flat <- function(outcome, index_term, data, origins, family = "z
       mean_elpd_null = null_score$mean_elpd,
       mean_elpd_index = index_score$mean_elpd,
       delta_elpd = sum(pointwise_delta),
-      se_diff = if (length(pointwise_delta) > 1) sqrt(length(pointwise_delta) * stats::var(pointwise_delta)) else NA_real_
+      se_diff = if (length(pointwise_delta) > 1) sqrt(length(pointwise_delta) * stats::var(pointwise_delta)) else NA_real_,
+      se_diff_cl = clustered_se(pointwise_delta, obs_period),
+      max_rhat = max(diag[, "max_rhat"]),
+      min_ess_bulk = min(diag[, "min_ess_bulk"]),
+      n_divergent = sum(diag[, "n_divergent"]),
+      n_retried = n_retried,
+      pointwise = list(tibble::tibble(period = obs_period, d = pointwise_delta))
     )
   }
 
   dplyr::bind_rows(result_rows)
 }
 
+
+#' Forward comparison of the index alone with a seasonal term alone
+#'
+#' [run_lfo_monthly()] scores a seasonal baseline (cyclic spline in day of year,
+#' no index) and [run_lfo_monthly_flat()] scores the index without a seasonal
+#' term, at the same monthly origins and on the same held-out collections. Their
+#' per-origin totals therefore give a head-to-head forward comparison of the two
+#' single-predictor models, which neither function reports on its own. Only the
+#' totals are available: the LFO functions keep pointwise differences within
+#' each evaluation, not each model's pointwise scores.
+#'
+#' The standard error treats the monthly differences as independent blocks
+#' (each month's held-out collections are disjoint), applying the cluster
+#' formula of [clustered_se()] with one cluster per origin. With twelve origins
+#' it is a rough guide rather than a precise interval.
+#'
+#' @param lfo_results Output of [run_lfo_monthly()] (seasonal baseline), for one
+#'   or more outcomes.
+#' @param lfo_noseason Output of [run_lfo_monthly_flat()] (no seasonal term) at
+#'   the same origins.
+#' @return One row per outcome present in both inputs: the number of origins and
+#'   held-out collections; pooled held-out ELPD of the null, the seasonal term
+#'   alone, the index alone and the index plus the seasonal term; the difference
+#'   index-alone minus season-alone with its block standard error; and the
+#'   number of origins at which the index alone scored higher.
+compare_lfo_index_vs_season <- function(lfo_results, lfo_noseason) {
+  season <- dplyr::select(lfo_results, outcome, train_through, n_test,
+                          elpd_season, elpd_index_season = elpd_index)
+  flat <- dplyr::select(lfo_noseason, outcome, train_through, n_test_flat = n_test,
+                        elpd_null, elpd_index)
+  joined <- dplyr::inner_join(season, flat, by = c("outcome", "train_through"))
+  stopifnot(nrow(joined) > 0, all(joined$n_test == joined$n_test_flat))
+  joined <- dplyr::mutate(joined, d = elpd_index - elpd_season)
+  dplyr::summarise(
+    dplyr::group_by(joined, outcome),
+    n_origins = dplyr::n(),
+    n_test = sum(n_test),
+    elpd_null = sum(elpd_null),
+    elpd_season_only = sum(elpd_season),
+    elpd_index_only = sum(elpd_index),
+    elpd_index_plus_season = sum(elpd_index_season),
+    delta_index_minus_season = sum(d),
+    se_block = clustered_se(d, train_through),
+    n_origins_index_better = sum(d > 0),
+    .groups = "drop"
+  )
+}
 
 #' Evaluate one cell of the leave-future-out robustness grid
 #'
@@ -755,7 +855,9 @@ run_lfo_monthly_flat <- function(outcome, index_term, data, origins, family = "z
 #' (non-seasonal baseline: index vs. an intercept-only null), then pools the
 #' per-origin forward ELPD differences into a single cell summary matching the
 #' schema consumed by [plot_delta_elpd_heatmap()]. Per-origin standard errors
-#' are combined in quadrature (origins evaluate disjoint held-out months).
+#' are combined in quadrature (origins evaluate disjoint held-out months), and a
+#' standard error clustered by collection period is reported alongside, together
+#' with the worst sampler diagnostics across every fit in the cell.
 #'
 #' @param outcome Response column name (e.g. "n_albo").
 #' @param index_term The index predictor.
@@ -775,6 +877,8 @@ run_lfo_grid_cell <- function(outcome, index_term, family, seasonal, window, agg
     run_lfo_monthly_flat(outcome = outcome, index_term = index_term, data = data, origins = origins, family = family, ...)
   }
 
+  pw <- dplyr::bind_rows(res$pointwise)
+
   tibble::tibble(
     index = "MWI",
     outcome = outcome,
@@ -783,6 +887,14 @@ run_lfo_grid_cell <- function(outcome, index_term, family, seasonal, window, agg
     aggregation = aggregation,
     seasonality = if (isTRUE(seasonal)) "Yes" else "No",
     delta_elpd = sum(res$delta_elpd, na.rm = TRUE),
-    se_diff = sqrt(sum(res$se_diff^2, na.rm = TRUE))
+    se_diff = sqrt(sum(res$se_diff^2, na.rm = TRUE)),
+    # Clustered by collection period across all forecast months together;
+    # periods do not span months, so this is the clustered SE of the pooled sum.
+    se_diff_cl = clustered_se(pw$d, pw$period),
+    n_origins = nrow(res),
+    max_rhat = max(res$max_rhat),
+    min_ess_bulk = min(res$min_ess_bulk),
+    n_divergent = sum(res$n_divergent),
+    n_retried = sum(res$n_retried)
   )
 }

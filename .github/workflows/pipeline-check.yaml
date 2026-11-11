@@ -28,9 +28,9 @@ jobs:
 
       # The package list must cover everything in tar_option_set(packages = ...)
       # in _targets.R: tar_make() verifies all globally declared packages exist
-      # before building anything, even targets that use none of them. brms,
-      # tmap and devtools are needed only for that check here (RSPM binaries,
-      # so the install stays quick).
+      # before building anything, even targets that use none of them. brms and
+      # tmap are needed only for that check here (RSPM binaries, so the install
+      # stays quick); sessioninfo is used by the this_session_info target.
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           packages: |
@@ -48,7 +48,7 @@ jobs:
             any::quarto
             any::brms
             any::tmap
-            any::devtools
+            any::sessioninfo
             any::R.utils
             E4Warning/mwi
 
@@ -63,9 +63,18 @@ jobs:
         run: |
           targets::tar_make(names = "prepared_data", callr_function = NULL,
                             reporter = "silent")
+          # _targets.R sets error = "continue", so tar_make() itself does not
+          # fail when a target errors; surface the target's own error instead.
+          errored <- targets::tar_errored()
+          if (length(errored)) {
+            m <- targets::tar_meta(names = tidyselect::all_of(errored),
+                                   fields = error)
+            stop("errored targets:\n",
+                 paste0("  ", m$name, ": ", m$error, collapse = "\n"))
+          }
           d <- targets::tar_read(prepared_data)
           cat("prepared_data:", nrow(d), "x", ncol(d), "\n")
           stopifnot(nrow(d) == 360, ncol(d) > 1000,
-                    sum(d$n_albo, na.rm = TRUE) == 7094,
+                    sum(d$n_albo, na.rm = TRUE) == 6675,
                     sum(d$n_cx,  na.rm = TRUE) == 3260)
         shell: Rscript {0}

@@ -1,6 +1,9 @@
 # b005_hobo_vs_era5_raw_weather.R
 #
-# EXPLORATORY (not currently part of the article or the targets pipeline).
+# STANDALONE VERSION of the raw-weather comparison. The pipeline runs the same
+# analysis as the targets raw_weather_fits and raw_weather_contrasts (see
+# R/convergence_and_sensitivity.R), and that is the version the article
+# reports. This script is kept because it runs on its own, from prepared_data.
 #
 # Question: the paper shows that MWI computed from the on-site HOBO loggers
 # predicts trap counts WORSE than MWI computed from ERA5-Land. Two very different
@@ -51,7 +54,9 @@ suppressMessages({
 set.seed(321)
 options(mc.cores = 4)
 
-OUT_RDS <- "data/proc/hobo_vs_era5_raw_weather.rds"
+table_dir <- file.path(Sys.getenv("MWI_OUTPUT_DIR", unset = "outputs"), "tables")
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+OUT_RDS <- file.path(table_dir, "hobo_vs_era5_raw_weather.rds")
 
 # ---------------------------------------------------------------------------
 # Data: the logger-complete subset

@@ -36,11 +36,10 @@ weather_source_palette <- c(
 #'   relative humidity and MWI, plus a flag marking the hours where the logger
 #'   readings force the index to zero while ERA5 keeps it positive.
 build_hobo_era5_hourly <- function(hobos_sundata, weather_era5_hourly) {
-  # The `hobos_sundata` target holds the loggers as recorded; the implausible-
-  # humidity screen is applied downstream in prepare_data(). Apply the same
-  # screen here, or the BG 2 sensor malfunction of Dec 2018 - Apr 2019 (795
-  # readings, some as low as 1% RH) would appear in the figure as though it were
-  # a real microclimate signal.
+  # prepare_weather_inputs() already de-duplicates the logger readings and
+  # applies the implausible-humidity screen (the BG 2 sensor malfunction of
+  # Dec 2018 - Apr 2019, with readings as low as 1% RH). Both are repeated here
+  # so the figure stays correct if it is ever fed the loggers as recorded.
   hobo_hourly <- hobos_sundata %>%
     dplyr::distinct(trap_name, date_time, .keep_all = TRUE) %>%
     dplyr::mutate(RH_perc = dplyr::if_else(RH_perc < hobo_rh_min_valid,
@@ -122,8 +121,9 @@ plot_hobo_era5_timeseries <- function(hobos_sundata, weather_era5_hourly,
   daily_statistic <- match.arg(daily_statistic)
 
   d <- build_hobo_era5_hourly(hobos_sundata, weather_era5_hourly)
-  if (!is.null(from)) d <- dplyr::filter(d, valid_time >= as.POSIXct(from, tz = "UTC"))
-  if (!is.null(to))   d <- dplyr::filter(d, valid_time <= as.POSIXct(to, tz = "UTC"))
+  # Window bounds and days are in local time, like everything else here.
+  if (!is.null(from)) d <- dplyr::filter(d, valid_time >= as.POSIXct(from, tz = "Europe/Athens"))
+  if (!is.null(to))   d <- dplyr::filter(d, valid_time <= as.POSIXct(to, tz = "Europe/Athens"))
   if (nrow(d) == 0) stop("No overlapping observations in the requested window.",
                          call. = FALSE)
 
@@ -136,13 +136,13 @@ plot_hobo_era5_timeseries <- function(hobos_sundata, weather_era5_hourly,
   if (resolution == "daily") {
     f <- switch(daily_statistic, max = max, mean = mean)
     d <- d %>%
-      dplyr::mutate(day = as.Date(valid_time)) %>%
+      dplyr::mutate(day = lubridate::as_date(lubridate::with_tz(valid_time, "Europe/Athens"))) %>%
       dplyr::group_by(day) %>%
       dplyr::summarise(dplyr::across(
         c(era5_temp, hobo_temp, era5_rh, hobo_rh, era5_mwi, hobo_mwi),
         ~ f(.x, na.rm = TRUE)
       ), .groups = "drop") %>%
-      dplyr::mutate(valid_time = as.POSIXct(day, tz = "UTC"))
+      dplyr::mutate(valid_time = lubridate::force_tz(as.POSIXct(day), "Europe/Athens"))
   }
 
   panel_levels <- c("Temperature (°C)", "Relative humidity (%)", "MWI")
@@ -231,4 +231,108 @@ plot_hobo_era5_timeseries <- function(hobos_sundata, weather_era5_hourly,
       strip.text.y.left = ggplot2::element_text(angle = 90),
       panel.grid.minor = ggplot2::element_blank()
     )
+}
+
+
+#' Logger coverage and agreement with ERA5-Land (Supplementary Table S3)
+#'
+#' One row per logger and a final row for all four together (`trap_name =
+#' "All"`), unrounded. Each 30-minute logger reading is matched to the
+#' ERA5-Land hour it rounds to; matched readings are those with a valid logger
+#' relative humidity and an ERA5-Land value. Formerly
+#' scripts/b006_hobo_stats_table_s3.R, which ran outside the pipeline.
+#'
+#' Columns: `matched_readings`; `pct_missing_rh`, the shortfall of valid
+#' humidity readings against the 30-minute slots expected over each logger's
+#' deployment span; the mean relative humidity from each source over the
+#' matched readings (`hobo_rh`, `era5_rh`), their mean difference `rh_diff`
+#' (logger minus ERA5-Land, percentage points) and `rh_diff_relative_pct` (that
+#' difference as a percentage of the ERA5-Land mean); the mean temperatures over
+#' the matched readings that have a logger temperature (`hobo_temp`,
+#' `era5_temp`); and `forced_zero_pct`, the share of the matched readings with a
+#' positive ERA5-Land index (`era5_positive_readings`) for which substituting
+#' the logger humidity, keeping ERA5-Land temperature and wind, forces the index
+#' to zero.
+#'
+#' @param hobos_sundata 30-minute logger readings (`trap_name`, `date_time`,
+#'   `temp_c`, `RH_perc`), already screened for implausible humidity.
+#' @param weather_era5_hourly Hourly ERA5-Land with `valid_time`, `temp_c`,
+#'   `relative_humidity` and the index factors `FT`, `FW` and `mwi`.
+#' @return A tibble with one row per logger and one for all loggers.
+summarize_hobo_era5_agreement <- function(hobos_sundata, weather_era5_hourly) {
+  hobos <- dplyr::distinct(hobos_sundata, trap_name, date_time, .keep_all = TRUE)
+  coverage <- hobos %>%
+    dplyr::group_by(trap_name) %>%
+    dplyr::summarise(
+      expected = floor(as.numeric(difftime(max(date_time), min(date_time), units = "mins")) / 30) + 1,
+      valid_rh = sum(!is.na(RH_perc)),
+      .groups = "drop"
+    )
+  era5 <- dplyr::select(weather_era5_hourly, valid_time, era5_temp = temp_c,
+                        era5_rh = relative_humidity, FT, FW, era5_mwi = mwi)
+  matched <- hobos %>%
+    dplyr::mutate(valid_time = lubridate::round_date(date_time, "hour")) %>%
+    dplyr::inner_join(era5, by = "valid_time") %>%
+    dplyr::filter(!is.na(RH_perc), !is.na(era5_rh)) %>%
+    dplyr::mutate(hobo_rh_mwi = FT * make_FH(RH_perc) * FW)
+
+  summarise_group <- function(d, cov) {
+    with_temp <- d[!is.na(d$temp_c) & !is.na(d$era5_temp), ]
+    positive <- d[!is.na(d$era5_mwi) & d$era5_mwi > 0 & !is.na(d$hobo_rh_mwi), ]
+    tibble::tibble(
+      matched_readings = nrow(d),
+      pct_missing_rh = 100 * (1 - sum(cov$valid_rh) / sum(cov$expected)),
+      hobo_rh = mean(d$RH_perc),
+      era5_rh = mean(d$era5_rh),
+      rh_diff = mean(d$RH_perc - d$era5_rh),
+      rh_diff_relative_pct = 100 * (mean(d$RH_perc) - mean(d$era5_rh)) / mean(d$era5_rh),
+      hobo_temp = mean(with_temp$temp_c),
+      era5_temp = mean(with_temp$era5_temp),
+      era5_positive_readings = nrow(positive),
+      forced_zero_pct = 100 * mean(positive$hobo_rh_mwi == 0)
+    )
+  }
+
+  traps <- sort(unique(matched$trap_name))
+  per_trap <- lapply(traps, function(tn) {
+    summarise_group(matched[matched$trap_name == tn, ], coverage[coverage$trap_name == tn, ])
+  })
+  dplyr::bind_rows(
+    dplyr::bind_cols(tibble::tibble(trap_name = traps), dplyr::bind_rows(per_trap)),
+    dplyr::bind_cols(tibble::tibble(trap_name = "All"), summarise_group(matched, coverage))
+  )
+}
+
+
+#' Hours in which the loggers force the index to zero (Supplementary Figure S1)
+#'
+#' On the hourly series behind Supplementary Figures S1 and S2, which averages
+#' the loggers across traps ([build_hobo_era5_hourly()]): among the hours with
+#' a positive ERA5-Land index, the share in which the loggers' humidity forces
+#' it to zero, over the whole logger record and within the window shown in
+#' Figure S1. [summarize_hobo_era5_agreement()] gives the same share counted
+#' over individual logger readings instead.
+#'
+#' @param hobos_sundata,weather_era5_hourly As for [build_hobo_era5_hourly()].
+#' @param from,to The Figure S1 window in local time, as given to
+#'   [plot_hobo_era5_timeseries()].
+#' @return A tibble with one row for the whole record and one for the window.
+summarize_forced_zero_hours <- function(hobos_sundata, weather_era5_hourly, from, to) {
+  d <- build_hobo_era5_hourly(hobos_sundata, weather_era5_hourly)
+  in_window <- d$valid_time >= as.POSIXct(from, tz = "Europe/Athens") &
+    d$valid_time <= as.POSIXct(to, tz = "Europe/Athens")
+  one <- function(x, label) {
+    positive <- x[!is.na(x$era5_mwi) & x$era5_mwi > 0, ]
+    tibble::tibble(
+      period = label,
+      hours = nrow(x),
+      era5_positive_hours = nrow(positive),
+      forced_zero_hours = sum(positive$forced_zero),
+      forced_zero_pct = 100 * mean(positive$forced_zero)
+    )
+  }
+  dplyr::bind_rows(
+    one(d, "whole logger record"),
+    one(d[in_window, ], paste("Figure S1 window,", from, "to", to))
+  )
 }

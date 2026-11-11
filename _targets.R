@@ -51,8 +51,26 @@ for (d in c(figure_dir, table_dir)) {
 # Options ####
 # Set target options:
 tar_option_set(
-  packages = c("mwi", "tibble", "brms", "readr", "dplyr", "readxl", "sf", "tmap", "ggplot2", "lubridate", "suncalc", "data.table", "janitor", "tibble", "parallel", "devtools"), # Packages that your targets need for their tasks.
-  format = "qs" # Optionally set the default storage format. qs is fast.
+  # Everything a target needs must be listed here: parallel workers attach
+  # these packages and nothing else (they never run the library() calls above).
+  packages = c("targets", "tarchetypes", "tidyverse", "mwi", "tibble", "brms", "readr", "dplyr", "readxl", "sf", "tmap", "ggplot2", "lubridate", "suncalc", "data.table", "janitor", "parallel"),
+  format = "qs", # Optionally set the default storage format. qs is fast.
+  # A full build takes about a day, and a model fit can occasionally fail for reasons
+  # unrelated to the code (e.g. rstan losing its forked chain processes when the
+  # machine sleeps or runs short of memory). Keep building everything else, and
+  # rerun tar_make() afterwards to retry only what failed.
+  error = "continue",
+  # Track the mwi package's functions as if they were defined here, so that a
+  # change to how the index is computed reruns every target that depends on it.
+  # (targets does not otherwise look inside installed packages.)
+  imports = "mwi",
+  # Optional parallel workers: set MWI_WORKERS (e.g. to 4) to build several
+  # targets at once. Each model fit already runs its four chains in parallel,
+  # so workers x 4 should not exceed the number of cores. Needs the crew
+  # package; without MWI_WORKERS the pipeline runs one target at a time.
+  controller = if (as.integer(Sys.getenv("MWI_WORKERS", "1")) > 1) {
+    crew::crew_controller_local(workers = as.integer(Sys.getenv("MWI_WORKERS")), seconds_idle = 120)
+  } else NULL
   #
   # Pipelines that take a long time to run may benefit from
   # optional distributed computing. To use this capability
@@ -112,7 +130,11 @@ xs_sea_days = xs %>% mutate(x = paste0(x, " + poly(sea_day, 2)"), x_name = paste
 
 xs = bind_rows(xs, xs_sea_days)
 
-xs_max = xs %>% mutate(x = str_replace(x, pattern = "_mean", "_max"), x_name = str_replace(x_name, pattern = "_mean", "_max"))
+# Every "_mean" in a specification must become "_max": str_replace() changes
+# only the first, which left the raw-weather "max" models with daily-maximum
+# humidity but daily-mean temperature and wind.
+xs_max = xs %>% mutate(x = str_replace_all(x, pattern = "_mean", "_max"), x_name = str_replace(x_name, pattern = "_mean", "_max"))
+stopifnot(!any(grepl("_mean", xs_max$x)))
 
 xs = bind_rows(xs, xs_max)
 
@@ -209,9 +231,8 @@ model_targets_albo <- tar_map(
   names = "name",
   # Fit the BRMS model for the current specification
   tar_target(M, fit_main_models(y=y, x=x, family=family, data = prepared_data)),
-  #  tar_target(M_loo, loo(M, moment_match = TRUE)), # temp taking out moment matching because it is causing crashes
   # Compute approximate leave-one-out diagnostics
-  tar_target(M_loo, loo(M)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   # Capture Bayesian R2 summaries
   tar_target(M_BR2, bayes_R2(M)),
   # Generate posterior predictive checks
@@ -226,9 +247,8 @@ model_targets_cx <- tar_map(
   names = "name",
   # Fit the BRMS model for the current specification
   tar_target(M, fit_main_models(y=y, x=x, family=family, data = prepared_data)),
-  #  tar_target(M_loo, loo(M, moment_match = TRUE)), # temp taking out moment matching because it is causing crashes
   # Compute approximate leave-one-out diagnostics
-  tar_target(M_loo, loo(M)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   # Capture Bayesian R2 summaries
   tar_target(M_BR2, bayes_R2(M)),
   # Generate posterior predictive checks
@@ -243,9 +263,8 @@ model_targets_total <- tar_map(
   names = "name",
   # Fit the BRMS model for the current specification
   tar_target(M, fit_main_models(y=y, x=x, family=family, data = prepared_data)),
-  #  tar_target(M_loo, loo(M, moment_match = TRUE)), # temp taking out moment matching because it is causing crashes
   # Compute approximate leave-one-out diagnostics
-  tar_target(M_loo, loo(M)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   # Capture Bayesian R2 summaries
   tar_target(M_BR2, bayes_R2(M)),
   # Generate posterior predictive checks
@@ -259,67 +278,67 @@ mwi_reduced_targets_albo <- tar_map(
   values = mwi_reduced_models_albo,
   names = "reduced_model",
   tar_target(M, fit_mwi_reduced_model(y = y, x = x, family = family, data = prepared_data)),
-  tar_target(M_loo, loo(M))
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 mwi_reduced_targets_cx <- tar_map(
   values = mwi_reduced_models_cx,
   names = "reduced_model",
   tar_target(M, fit_mwi_reduced_model(y = y, x = x, family = family, data = prepared_data)),
-  tar_target(M_loo, loo(M))
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 mwi_reduced_targets_total <- tar_map(
   values = mwi_reduced_models_total,
   names = "reduced_model",
   tar_target(M, fit_mwi_reduced_model(y = y, x = x, family = family, data = prepared_data)),
-  tar_target(M_loo, loo(M))
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 # Generate FHFT models for paired comparisons against no-FHFT reduced models
 fhft_targets_albo <- tar_map(
   values = fhft_full_models_albo,
   names = "full_model",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M)),
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   tar_target(M_idxcoef, summarize_index_coef(M, model_name = full_model, outcome = y))
 )
 
 fhft_targets_cx <- tar_map(
   values = fhft_full_models_cx,
   names = "full_model",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M)),
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   tar_target(M_idxcoef, summarize_index_coef(M, model_name = full_model, outcome = y))
 )
 
 fhft_targets_total <- tar_map(
   values = fhft_full_models_total,
   names = "full_model",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M)),
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   tar_target(M_idxcoef, summarize_index_coef(M, model_name = full_model, outcome = y))
 )
 
 fhft_reduced_targets_albo <- tar_map(
   values = fhft_reduced_models_albo,
   names = "reduced_model",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 fhft_reduced_targets_cx <- tar_map(
   values = fhft_reduced_models_cx,
   names = "reduced_model",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 fhft_reduced_targets_total <- tar_map(
   values = fhft_reduced_models_total,
   names = "reduced_model",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft)),
-  tar_target(M_loo, loo(M))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data)),
+  tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
 
 # Train on 2018 and evaluate 2019 for MWI models
@@ -370,44 +389,44 @@ mwi_reduced_holdout_targets_total <- tar_map(
 fhft_holdout_targets_albo <- tar_map(
   values = fhft_full_models_albo,
   names = "full_holdout_branch",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 fhft_holdout_targets_cx <- tar_map(
   values = fhft_full_models_cx,
   names = "full_holdout_branch",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 fhft_holdout_targets_total <- tar_map(
   values = fhft_full_models_total,
   names = "full_holdout_branch",
-  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 # Train on 2018 and evaluate 2019 for reduced no-FHFT models
 fhft_reduced_holdout_targets_albo <- tar_map(
   values = fhft_reduced_models_albo,
   names = "reduced_holdout_branch",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 fhft_reduced_holdout_targets_cx <- tar_map(
   values = fhft_reduced_models_cx,
   names = "reduced_holdout_branch",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 fhft_reduced_holdout_targets_total <- tar_map(
   values = fhft_reduced_models_total,
   names = "reduced_holdout_branch",
-  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_fhft_train_2018)),
-  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_fhft_test_2019))
+  tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data_train_2018)),
+  tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
 
 # Collect all fitted Aedes models into a single list
@@ -701,11 +720,11 @@ effort_sensitivity_targets <- tar_map(
   names = "suffix",
   # log(trapping effort) as a covariate
   tar_target(M_effort_log, fit_main_models_logTE(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data)),
-  tar_target(M_effort_log_loo, loo(M_effort_log)),
+  tar_target(M_effort_log_loo, loo_checked(M_effort_log, prepared_data)),
   tar_target(M_effort_log_summary, summarize_spec_comparison(M_effort_log, M_effort_log_loo, label = "log effort covariate", outcome = outcome)),
   # log(trapping effort) as an offset
   tar_target(M_effort_offset, fit_main_models_OSTE(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data)),
-  tar_target(M_effort_offset_loo, loo(M_effort_offset)),
+  tar_target(M_effort_offset_loo, loo_checked(M_effort_offset, prepared_data)),
   tar_target(M_effort_offset_summary, summarize_spec_comparison(M_effort_offset, M_effort_offset_loo, label = "log effort offset", outcome = outcome))
 )
 
@@ -713,7 +732,7 @@ helix_sensitivity_targets <- tar_map(
   values = sensitivity_outcomes,
   names = "suffix",
   tar_target(M_helix, fit_main_models(y = outcome, x = "mean_mwi_max_helix", family = "zero_inflated_negbinomial", data = prepared_data)),
-  tar_target(M_helix_loo, loo(M_helix)),
+  tar_target(M_helix_loo, loo_checked(M_helix, prepared_data)),
   tar_target(M_helix_summary, summarize_spec_comparison(M_helix, M_helix_loo, label = "Helix daily MWI", outcome = outcome))
 )
 
@@ -812,7 +831,7 @@ raw_weather_targets <- tar_map(
   values = raw_weather_spec,
   names = "spec_name",
   tar_target(M_rw, fit_count_only_model(y = outcome, x = x, data = hobo_subset_data)),
-  tar_target(M_rw_loo, loo(M_rw)),
+  tar_target(M_rw_loo, loo_checked(M_rw, hobo_subset_data)),
   tar_target(
     M_rw_summary,
     summarize_raw_weather_fit(M_rw, M_rw_loo, spec_name = spec_name, outcome = outcome,
@@ -826,12 +845,112 @@ raw_weather_combined <- tar_combine(
   command = dplyr::bind_rows(!!!.x)
 )
 
+# Revision analyses ####
+
+# Order of operations, same source. The index computed from ERA5-Land weather
+# already summarised to the day (daily maximum, mean or minimum of each
+# variable), against the hourly-then-aggregated index. Source and grid cell are
+# held fixed, so the only difference is the order of operations.
+aggfirst_spec <- tidyr::expand_grid(
+  outcome = c("n_albo", "n_cx", "n_total"),
+  stat = c("max", "mean", "min")
+) %>%
+  dplyr::mutate(
+    suffix = paste(sub("^n_", "", outcome), stat, sep = "_"),
+    x = paste0("mean_era5_aggfirst_mwi_", stat),
+    label = paste0("ERA5-Land daily ", stat, " weather, then indexed")
+  )
+aggfirst_targets <- tar_map(
+  values = aggfirst_spec,
+  names = "suffix",
+  tar_target(M_aggfirst, fit_main_models(y = outcome, x = x, family = "zero_inflated_negbinomial", data = prepared_data)),
+  tar_target(M_aggfirst_loo, loo_checked(M_aggfirst, prepared_data)),
+  tar_target(M_aggfirst_summary, summarize_spec_comparison(M_aggfirst, M_aggfirst_loo, label = label, outcome = outcome))
+)
+aggfirst_combined <- tar_combine(
+  aggfirst_summary,
+  aggfirst_targets[["M_aggfirst_summary"]],
+  command = dplyr::bind_rows(!!!.x)
+)
+
+# Prior sensitivity: the primary models with a normal(0, 5) prior on the MWI
+# coefficient in both components, instead of brms's default flat prior.
+prior_sensitivity_targets <- tar_map(
+  values = sensitivity_outcomes,
+  names = "suffix",
+  tar_target(M_prior, fit_main_models(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data, prior = mwi_coefficient_prior("mean_era5_mwi_max"))),
+  tar_target(M_prior_loo, loo_checked(M_prior, prepared_data)),
+  tar_target(M_prior_summary, summarize_spec_comparison(M_prior, M_prior_loo, label = "normal(0, 5) prior on MWI coefficients", outcome = outcome))
+)
+prior_sensitivity_combined <- tar_combine(
+  prior_sensitivity_summary,
+  prior_sensitivity_targets[["M_prior_summary"]],
+  command = dplyr::bind_rows(!!!.x)
+)
+
+# Logger versus reanalysis index (Supplementary Table S6) on the trap-periods
+# with logger coverage, with and without the 80% coverage screen.
+hobo_mwi_spec <- tidyr::expand_grid(
+  tibble::tibble(outcome = c("n_albo", "n_cx"), tag = c("albo", "cx")),
+  tibble::tibble(
+    screen = c("screened", "unscreened"),
+    hobo_data = rlang::syms(c("hobo_subset_data", "hobo_subset_data_unscreened"))
+  )
+) %>%
+  dplyr::mutate(suffix = paste(tag, screen, sep = "_"))
+hobo_mwi_targets <- tar_map(
+  values = hobo_mwi_spec,
+  names = "suffix",
+  tar_target(M_hobo_null, fit_mwi_reduced_model(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
+  tar_target(M_hobo_era5, fit_main_models(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
+  tar_target(M_hobo_mwi, fit_main_models(y = outcome, x = "mean_hobo_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
+  tar_target(M_hobo_null_loo, loo_checked(M_hobo_null, hobo_data)),
+  tar_target(M_hobo_era5_loo, loo_checked(M_hobo_era5, hobo_data)),
+  tar_target(M_hobo_mwi_loo, loo_checked(M_hobo_mwi, hobo_data)),
+  tar_target(M_hobo_summary, summarize_hobo_mwi_comparison(M_hobo_null_loo, M_hobo_era5_loo, M_hobo_mwi_loo, M_hobo_era5, M_hobo_mwi, outcome = outcome, screen = screen))
+)
+hobo_mwi_combined <- tar_combine(
+  hobo_mwi_comparison,
+  hobo_mwi_targets[["M_hobo_summary"]],
+  command = dplyr::bind_rows(!!!.x)
+)
+
+# Convergence of every model fitted outside the main grid (the grid and its
+# reduced models are covered by convergence_summary; the leave-future-out
+# refits record their diagnostics in their own results).
+extra_fit_names <- c(
+  paste0(rep(c("M_effort_log_", "M_effort_offset_", "M_helix_", "M_prior_"), each = 3), sensitivity_outcomes$suffix),
+  paste0("M_aggfirst_", aggfirst_spec$suffix),
+  paste0("M_cyc_", rep(c("season", "MWI", "FHFT"), each = 3), "_", c("albo", "cx", "total")),
+  paste0("M_rw_", raw_weather_spec$spec_name),
+  paste0(rep(c("M_hobo_null_", "M_hobo_era5_", "M_hobo_mwi_"), each = nrow(hobo_mwi_spec)), hobo_mwi_spec$suffix)
+)
+convergence_extra_targets <- lapply(extra_fit_names, function(this_name) {
+  tar_target_raw(
+    name = paste0("conv_", this_name),
+    command = substitute(
+      summarize_model_convergence(model, this_name),
+      list(model = as.symbol(this_name), this_name = this_name)
+    )
+  )
+})
+convergence_extra_combined <- tar_combine(
+  convergence_summary_extra,
+  convergence_extra_targets,
+  command = dplyr::bind_rows(!!!.x)
+)
+
 # Render the Quarto analysis report
 quarto_target <- tar_quarto(
   analysis_report,
   path = "analysis_report.qmd",
   quiet = FALSE
 )
+
+# The fortnight shown in Supplementary Figure S1 (local time), one of the
+# windows with the most hours in which the loggers' humidity forces the index to
+# zero. Used by the figure and by the forced-zero shares quoted with it.
+hobo_ts_window <- c(from = "2019-08-24", to = "2019-09-08")
 
 # Targets list ####
 # Replace the target list below with your own:
@@ -846,49 +965,30 @@ list(
   tar_target(trap_data, load_trap_data(file = file_trap_data)),  
   # Load trap location metadata
   tar_target(trap_location_data, load_trap_location_data(file = file_trap_data)),
-  # Shortcut: cached hourly ERA5 path + data
-  tar_target(weather_era5_hourly_data_file, "data/proc/weather_era5_hourly.Rds", format = "file"),
-  tar_target(weather_era5_hourly_data, read_rds(weather_era5_hourly_data_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached ERA5 daily aggregates
-  tar_target(era5_daily_data_file, "data/proc/era5_daily.Rds", format = "file"),
-  tar_target(era5_daily_data, read_rds(era5_daily_data_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached daylight-only ERA5 aggregates
-  tar_target(era5_daylight_daily_file, "data/proc/era5_daylight_daily.Rds", format = "file"),
-  tar_target(era5_daylight_daily, read_rds(era5_daylight_daily_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached albotime ERA5 aggregates
-  tar_target(era5_albotime_daily_file, "data/proc/era5_albotime_daily.Rds", format = "file"),
-  tar_target(era5_albotime_daily, read_rds(era5_albotime_daily_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached hourly ERA5 with sun metadata
-  tar_target(weather_era5_hourly_sundata_file, "data/proc/weather_era5_hourly_sundata.Rds", format = "file"),
-  tar_target(weather_era5_hourly_sundata, read_rds(weather_era5_hourly_sundata_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached Helix station day-level data
-  tar_target(helix_data_file, "data/proc/helix.Rds", format = "file"),
-  tar_target(helix_data, read_rds(helix_data_file)),  # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached Hobo logger data
-  tar_target(hobos_data_file, "data/proc/hobos.Rds", format = "file"),
-  tar_target(hobos_data, read_rds(hobos_data_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Shortcut: cached Hobo logger sun-tagged data
-  tar_target(hobos_sundata_file, "data/proc/hobos_sundata.Rds", format = "file"),
-  tar_target(hobos_sundata, read_rds(hobos_sundata_file)), # temp adding this to avoid rerunning all targets. TODO: modify the initial data processing function to create separate functions that return this as output along the way to producing the final prepared dataset.
-  # Produce the unified modeling dataset
-  tar_target(prepared_data, prepare_data(trap_data=trap_data, trap_location_data=trap_location_data, file_helix_data=file_helix_data)),
-  # Derive FHFT variables downstream from prepared_data to preserve cached upstream targets
-  tar_target(
-    prepared_data_fhft,
-    prepared_data %>% mutate(
-      mean_era5_fhft_mean = mean_era5_FH_mean * mean_era5_FT_mean,
-      mean_era5_fhft_max = mean_era5_FH_max * mean_era5_FT_max,
-      mean_era5_albotime_fhft_mean = mean_era5_albotime_FH_mean * mean_era5_albotime_FT_mean,
-      mean_era5_albotime_fhft_max = mean_era5_albotime_FH_max * mean_era5_albotime_FT_max,
-      mean_era5_daylight_fhft_mean = mean_era5_daylight_FH_mean * mean_era5_daylight_FT_mean,
-      mean_era5_daylight_fhft_max = mean_era5_daylight_FH_max * mean_era5_daylight_FT_max
-    )
-  ),
+  # Raw inputs read by prepare_weather_inputs(), tracked so that a change to
+  # any of them reruns the pipeline
+  tar_target(era5_extract_files, list.files("data/proc", pattern = "^era5_.*\\.csv\\.gz$", full.names = TRUE), format = "file"),
+  tar_target(logger_files, list.files("data/raw/traps", pattern = "hobo", full.names = TRUE), format = "file"),
+  tar_target(station_files, list.files("data/raw/weather", full.names = TRUE), format = "file"),
+  # Every weather source, processed: the hourly index and its daily summaries
+  tar_target(weather_inputs, prepare_weather_inputs(trap_data, trap_location_data, file_helix_data, input_files = c(era5_extract_files, logger_files, station_files))),
+  # The intermediate tables, as targets for the report and figures
+  tar_target(weather_era5_hourly_data, weather_inputs$weather_era5_hourly),
+  tar_target(era5_daily_data, weather_inputs$era5_daily),
+  tar_target(era5_daylight_daily, weather_inputs$era5_daylight_daily),
+  tar_target(era5_albotime_daily, weather_inputs$era5_albotime_daily),
+  tar_target(weather_era5_hourly_sundata, weather_inputs$weather_era5_hourly_sundata),
+  tar_target(helix_data, weather_inputs$helix),
+  tar_target(hobos_data, weather_inputs$hobos),
+  tar_target(hobos_sundata, weather_inputs$hobos_sundata),
+  # The unified modeling dataset. Logger summaries are kept only for
+  # trap-periods with at least 80% of their expected logger readings; the
+  # unscreened version is for the sensitivity analysis.
+  tar_target(prepared_data, prepare_data(trap_data, weather_inputs)),
+  tar_target(prepared_data_hobo_unscreened, prepare_data(trap_data, weather_inputs, hobo_min_coverage = 0)),
   # Split prepared data for temporal holdout validation
   tar_target(prepared_data_train_2018, prepared_data %>% filter(year == 2018)),
   tar_target(prepared_data_test_2019, prepared_data %>% filter(year == 2019)),
-  tar_target(prepared_data_fhft_train_2018, prepared_data_fhft %>% filter(year == 2018)),
-  tar_target(prepared_data_fhft_test_2019, prepared_data_fhft %>% filter(year == 2019)),
   # Run albopictus model grid
   model_targets_albo,
   # Run Culex model grid
@@ -1040,18 +1140,18 @@ list(
   tar_target(M_cyc_MWI_albo,  fit_main_models_cyclic_season(y = "n_albo",  x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_cyc_MWI_cx,    fit_main_models_cyclic_season(y = "n_cx",    x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_cyc_MWI_total, fit_main_models_cyclic_season(y = "n_total", x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data)),
-  tar_target(M_cyc_FHFT_albo,  fit_main_models_cyclic_season(y = "n_albo",  x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data_fhft)),
-  tar_target(M_cyc_FHFT_cx,    fit_main_models_cyclic_season(y = "n_cx",    x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data_fhft)),
-  tar_target(M_cyc_FHFT_total, fit_main_models_cyclic_season(y = "n_total", x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data_fhft)),
-  tar_target(M_cyc_season_albo_loo,  loo(M_cyc_season_albo)),
-  tar_target(M_cyc_season_cx_loo,    loo(M_cyc_season_cx)),
-  tar_target(M_cyc_season_total_loo, loo(M_cyc_season_total)),
-  tar_target(M_cyc_MWI_albo_loo,  loo(M_cyc_MWI_albo)),
-  tar_target(M_cyc_MWI_cx_loo,    loo(M_cyc_MWI_cx)),
-  tar_target(M_cyc_MWI_total_loo, loo(M_cyc_MWI_total)),
-  tar_target(M_cyc_FHFT_albo_loo,  loo(M_cyc_FHFT_albo)),
-  tar_target(M_cyc_FHFT_cx_loo,    loo(M_cyc_FHFT_cx)),
-  tar_target(M_cyc_FHFT_total_loo, loo(M_cyc_FHFT_total)),
+  tar_target(M_cyc_FHFT_albo,  fit_main_models_cyclic_season(y = "n_albo",  x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data)),
+  tar_target(M_cyc_FHFT_cx,    fit_main_models_cyclic_season(y = "n_cx",    x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data)),
+  tar_target(M_cyc_FHFT_total, fit_main_models_cyclic_season(y = "n_total", x = "mean_era5_fhft_max", family = "zero_inflated_negbinomial", data = prepared_data)),
+  tar_target(M_cyc_season_albo_loo, loo_checked(M_cyc_season_albo, prepared_data)),
+  tar_target(M_cyc_season_cx_loo, loo_checked(M_cyc_season_cx, prepared_data)),
+  tar_target(M_cyc_season_total_loo, loo_checked(M_cyc_season_total, prepared_data)),
+  tar_target(M_cyc_MWI_albo_loo, loo_checked(M_cyc_MWI_albo, prepared_data)),
+  tar_target(M_cyc_MWI_cx_loo, loo_checked(M_cyc_MWI_cx, prepared_data)),
+  tar_target(M_cyc_MWI_total_loo, loo_checked(M_cyc_MWI_total, prepared_data)),
+  tar_target(M_cyc_FHFT_albo_loo, loo_checked(M_cyc_FHFT_albo, prepared_data)),
+  tar_target(M_cyc_FHFT_cx_loo, loo_checked(M_cyc_FHFT_cx, prepared_data)),
+  tar_target(M_cyc_FHFT_total_loo, loo_checked(M_cyc_FHFT_total, prepared_data)),
   # Weekly pointwise-ELPD: index + cyclic season vs cyclic season only
   tar_target(
     temporal_elpd_cyc,
@@ -1059,9 +1159,9 @@ list(
       compare_pointwise_elpd(M_cyc_MWI_albo,  M_cyc_season_albo,  prepared_data,      M_cyc_MWI_albo_loo,  M_cyc_season_albo_loo)  %>% dplyr::mutate(outcome = "Albopictus", index = "MWI"),
       compare_pointwise_elpd(M_cyc_MWI_cx,    M_cyc_season_cx,    prepared_data,      M_cyc_MWI_cx_loo,    M_cyc_season_cx_loo)    %>% dplyr::mutate(outcome = "Culex",      index = "MWI"),
       compare_pointwise_elpd(M_cyc_MWI_total, M_cyc_season_total, prepared_data,      M_cyc_MWI_total_loo, M_cyc_season_total_loo) %>% dplyr::mutate(outcome = "Total",      index = "MWI"),
-      compare_pointwise_elpd(M_cyc_FHFT_albo,  M_cyc_season_albo,  prepared_data_fhft, M_cyc_FHFT_albo_loo,  M_cyc_season_albo_loo)  %>% dplyr::mutate(outcome = "Albopictus", index = "FHFT"),
-      compare_pointwise_elpd(M_cyc_FHFT_cx,    M_cyc_season_cx,    prepared_data_fhft, M_cyc_FHFT_cx_loo,    M_cyc_season_cx_loo)    %>% dplyr::mutate(outcome = "Culex",      index = "FHFT"),
-      compare_pointwise_elpd(M_cyc_FHFT_total, M_cyc_season_total, prepared_data_fhft, M_cyc_FHFT_total_loo, M_cyc_season_total_loo) %>% dplyr::mutate(outcome = "Total",      index = "FHFT")
+      compare_pointwise_elpd(M_cyc_FHFT_albo,  M_cyc_season_albo,  prepared_data,      M_cyc_FHFT_albo_loo,  M_cyc_season_albo_loo)  %>% dplyr::mutate(outcome = "Albopictus", index = "FHFT"),
+      compare_pointwise_elpd(M_cyc_FHFT_cx,    M_cyc_season_cx,    prepared_data,      M_cyc_FHFT_cx_loo,    M_cyc_season_cx_loo)    %>% dplyr::mutate(outcome = "Culex",      index = "FHFT"),
+      compare_pointwise_elpd(M_cyc_FHFT_total, M_cyc_season_total, prepared_data,      M_cyc_FHFT_total_loo, M_cyc_season_total_loo) %>% dplyr::mutate(outcome = "Total",      index = "FHFT")
     )
   ),
   # ---- Monthly leave-future-out forecast (additive; MWI vs season-only) ------
@@ -1084,6 +1184,10 @@ list(
   tar_target(lfo_noseason_albo, run_lfo_monthly_flat("n_albo", "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_noseason_cx,   run_lfo_monthly_flat("n_cx",   "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_noseason,      dplyr::bind_rows(lfo_noseason_albo, lfo_noseason_cx)),
+  # Forward head-to-head of the two single-predictor models: the index alone (the
+  # index model of lfo_noseason) against the seasonal term alone (the baseline of
+  # lfo_results), scored at the same origins on the same held-out collections.
+  tar_target(lfo_index_vs_season, compare_lfo_index_vs_season(lfo_results, lfo_noseason)),
   # ---- LFO robustness grid (MWI only) map + combine (see lfo_grid_spec) --------
   lfo_grid_targets,
   lfo_grid_combined,
@@ -1131,8 +1235,39 @@ list(
   raw_weather_targets,
   raw_weather_combined,
   tar_target(raw_weather_contrasts, compare_raw_weather_specs(raw_weather_fits)),
+  # ---- Revision analyses ----------------------------------------------------
+  aggfirst_targets,
+  aggfirst_combined,
+  tar_target(order_of_operations_elpd, dplyr::bind_rows(
+    compare_elpd_to_reference(list(`ERA5-Land hourly MWI` = M_loo_MWI_max_ZINB_albo, `ERA5-Land daily max, then indexed` = M_aggfirst_loo_albo_max, `ERA5-Land daily mean, then indexed` = M_aggfirst_loo_albo_mean, `ERA5-Land daily min, then indexed` = M_aggfirst_loo_albo_min, `Helix daily, then indexed` = M_helix_loo_albo, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_albo), reference = "ERA5-Land hourly MWI", outcome = "n_albo"),
+    compare_elpd_to_reference(list(`ERA5-Land hourly MWI` = M_loo_MWI_max_ZINB_cx, `ERA5-Land daily max, then indexed` = M_aggfirst_loo_cx_max, `ERA5-Land daily mean, then indexed` = M_aggfirst_loo_cx_mean, `ERA5-Land daily min, then indexed` = M_aggfirst_loo_cx_min, `Helix daily, then indexed` = M_helix_loo_cx, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_cx), reference = "ERA5-Land hourly MWI", outcome = "n_cx"),
+    compare_elpd_to_reference(list(`ERA5-Land hourly MWI` = M_loo_MWI_max_ZINB_total, `ERA5-Land daily max, then indexed` = M_aggfirst_loo_total_max, `ERA5-Land daily mean, then indexed` = M_aggfirst_loo_total_mean, `ERA5-Land daily min, then indexed` = M_aggfirst_loo_total_min, `Helix daily, then indexed` = M_helix_loo_total, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_total), reference = "ERA5-Land hourly MWI", outcome = "n_total")
+  )),
+  prior_sensitivity_targets,
+  prior_sensitivity_combined,
+  tar_target(prior_sensitivity_table, dplyr::arrange(dplyr::bind_rows(effort_primary_summary, prior_sensitivity_summary), outcome, spec)),
+  tar_target(prior_sensitivity_elpd, dplyr::bind_rows(
+    compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_albo, `normal(0, 5) on MWI` = M_prior_loo_albo), reference = "flat (primary)", outcome = "n_albo"),
+    compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_cx, `normal(0, 5) on MWI` = M_prior_loo_cx), reference = "flat (primary)", outcome = "n_cx"),
+    compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_total, `normal(0, 5) on MWI` = M_prior_loo_total), reference = "flat (primary)", outcome = "n_total")
+  )),
+  tar_target(hobo_subset_data_unscreened, dplyr::filter(prepared_data_hobo_unscreened, !is.na(mean_hobo_mwi_max))),
+  hobo_mwi_targets,
+  hobo_mwi_combined,
+  # Supplementary Table S5: the index against the raw weather variables, and the
+  # two single-predictor models head to head (the index alone vs a seasonal term alone)
+  tar_target(mwi_vs_raw_weather_elpd, dplyr::bind_rows(
+    compare_elpd_to_reference(list(MWI = M_loo_MWI_max_ZINB_albo, `Linear weather` = M_loo_HTW_max_ZINB_albo, `Quadratic weather` = M_loo_poly2HTW_max_ZINB_albo, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_albo, `Seasonal term (no MWI)` = M_loo_noMWI_sea_zero_inflated_negbinomial_n_albo), reference = "MWI", outcome = "n_albo"),
+    compare_elpd_to_reference(list(MWI = M_loo_MWI_max_ZINB_cx, `Linear weather` = M_loo_HTW_max_ZINB_cx, `Quadratic weather` = M_loo_poly2HTW_max_ZINB_cx, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_cx, `Seasonal term (no MWI)` = M_loo_noMWI_sea_zero_inflated_negbinomial_n_cx), reference = "MWI", outcome = "n_cx"),
+    compare_elpd_to_reference(list(MWI = M_loo_MWI_max_ZINB_total, `Linear weather` = M_loo_HTW_max_ZINB_total, `Quadratic weather` = M_loo_poly2HTW_max_ZINB_total, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_total, `Seasonal term (no MWI)` = M_loo_noMWI_sea_zero_inflated_negbinomial_n_total), reference = "MWI", outcome = "n_total")
+  )),
+  tar_target(loo_reliability, summarize_loo_reliability(c(combined_loos_albo, combined_loos_cx, combined_loos_total, combined_loos_mwi_reduced_albo, combined_loos_mwi_reduced_cx, combined_loos_mwi_reduced_total, combined_loos_fhft_albo, combined_loos_fhft_cx, combined_loos_fhft_total, combined_loos_fhft_reduced_albo, combined_loos_fhft_reduced_cx, combined_loos_fhft_reduced_total))),
+  convergence_extra_targets,
+  convergence_extra_combined,
+  # Every summary table, as CSV in outputs/tables
+  tar_target(paper_tables, write_tables(list(effort_sensitivity_table = effort_sensitivity_table, effort_sensitivity_elpd = effort_sensitivity_elpd, helix_vs_era5_table = helix_vs_era5_table, helix_vs_era5_elpd = helix_vs_era5_elpd, aggfirst_summary = aggfirst_summary, order_of_operations_elpd = order_of_operations_elpd, daily_vs_hourly_mwi_cor = daily_vs_hourly_mwi_cor, mwi_variant_contrasts = mwi_variant_contrasts, mwi_vs_raw_weather_elpd = mwi_vs_raw_weather_elpd, raw_weather_fits = raw_weather_fits, raw_weather_contrasts = raw_weather_contrasts, hobo_mwi_comparison = hobo_mwi_comparison, hobo_era5_agreement = hobo_era5_agreement, hobo_era5_forced_zero_hours = hobo_era5_forced_zero_hours, prior_sensitivity_table = prior_sensitivity_table, prior_sensitivity_elpd = prior_sensitivity_elpd, loo_reliability = loo_reliability, convergence_summary = convergence_summary, convergence_summary_extra = convergence_summary_extra, convergence_overall = convergence_overall, lfo_results = lfo_results, lfo_results_mean = lfo_results_mean, lfo_noseason = lfo_noseason, lfo_index_vs_season = lfo_index_vs_season, lfo_grid_results = lfo_grid_results, index_coef_summary = index_coef_summary, mwi_pairwise_loo_albo = mwi_pairwise_loo_albo, mwi_pairwise_loo_cx = mwi_pairwise_loo_cx, mwi_pairwise_loo_total = mwi_pairwise_loo_total, fhft_pairwise_loo_albo = fhft_pairwise_loo_albo, fhft_pairwise_loo_cx = fhft_pairwise_loo_cx, fhft_pairwise_loo_total = fhft_pairwise_loo_total), table_dir), format = "file"),
   # Preserve session information for reproducibility
-  tar_target(this_session_info, session_info()),
+  tar_target(this_session_info, sessioninfo::session_info()),
   # Render the Quarto report after models finish
   quarto_target,
   # Static + interactive map of the BG trap locations (written to the article images)
@@ -1238,17 +1373,28 @@ list(
     ),
     format = "file"
   ),
+  # ---- HOBO vs ERA5: logger statistics (Supplementary Table S3) ---------------
+  # Coverage and agreement with ERA5-Land per logger and overall (formerly
+  # scripts/b006_hobo_stats_table_s3.R), and the share of hours in which the
+  # loggers force the index to zero, over the whole record and in the Figure S1
+  # window. Together these give every logger statistic quoted in the article.
+  tar_target(hobo_era5_agreement, summarize_hobo_era5_agreement(hobos_sundata, weather_era5_hourly_data)),
+  tar_target(
+    hobo_era5_forced_zero_hours,
+    summarize_forced_zero_hours(hobos_sundata, weather_era5_hourly_data,
+                                hobo_ts_window[["from"]], hobo_ts_window[["to"]])
+  ),
   # ---- HOBO vs ERA5 weather time series (supplementary) -----------------------
   # Two views of the same comparison. The daily one gives whole-study context;
   # the hourly one is what actually shows the mechanism, because summarising to
   # a day averages away the afternoon humidity dips that drive the index to zero.
-  # The window below is the fortnight with the most such hours.
+  # The hourly view shows the fortnight in hobo_ts_window.
   tar_target(
     article_fig_hobo_era5_ts,
     save_ggplot_png(
       plot_hobo_era5_timeseries(
         hobos_sundata, weather_era5_hourly_data,
-        from = "2019-08-24", to = "2019-09-08", resolution = "hourly"
+        from = hobo_ts_window[["from"]], to = hobo_ts_window[["to"]], resolution = "hourly"
       ),
       file.path(figure_dir, "hobo_era5_timeseries_hourly.png"),
       width = 9, height = 6.5

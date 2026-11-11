@@ -17,7 +17,11 @@ format:
     page-layout: full
 execute: 
   echo: false
-  cache: true
+  # No knitr cache: it keys each chunk on its code, not on the targets the
+  # chunk reads, so after models are refit a cached chunk would silently reuse
+  # stale results (including figures this report supplies to the article).
+  # tar_quarto() already re-renders only when upstream targets change.
+  cache: false
 ---
 
 
@@ -122,8 +126,11 @@ The wind component of MWI contributes essentially nothing to BG-count prediction
 
 ```{r}
 #| label: fig-mwi-ce
+#| fig-dpi: 150
 #| message: false
 #| fig-cap: "Expected BG trap count as a function of MWI (24-hour daily maximum), from the primary ZINB model, for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Shaded bands are 90% credible intervals. Trapping effort at its median; trap random intercepts ignored. Note the independent count (y) scales."
+# The article uses this figure and three others below; fig-dpi 150 saves them at
+# 300 dpi (2100 x 1500 px), because Quarto doubles the dpi for HTML figures.
 
 m_albo <- targets::tar_read(M_MWI_max_ZINB_albo)
 m_cx   <- targets::tar_read(M_MWI_max_ZINB_cx)
@@ -142,6 +149,7 @@ The MWI coefficient is credibly positive in the count component for both species
 
 ```{r}
 #| label: fig-mwi-coefs-count
+#| fig-dpi: 150
 #| message: false
 #| fig-cap: "Posterior distributions of the count-component (log-mean) coefficients of the primary ZINB models for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Point intervals show the posterior median with 50% and 90% credible intervals; the dashed line marks zero."
 
@@ -155,6 +163,7 @@ mwi_coef_posterior_plot(
 
 ```{r}
 #| label: fig-mwi-coefs-zi
+#| fig-dpi: 150
 #| message: false
 #| fig-cap: "Posterior distributions of the zero-inflation-component (logit) coefficients of the primary ZINB models for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Point intervals show the posterior median with 50% and 90% credible intervals; the dashed line marks zero. A negative MWI coefficient means higher MWI lowers the probability of a structural zero."
 
@@ -245,8 +254,9 @@ The LOO comparison above is retrospective — every model is trained on the whol
 
 ```{r}
 #| label: fig-mwi-lfo
+#| fig-dpi: 150
 #| message: false
-#| fig-cap: "Monthly leave-future-out forecast skill: forward ΔELPD (MWI + cyclic season minus cyclic season only), refitting on past data only and forecasting the next month with observed weather. Error bars are ±1 SE."
+#| fig-cap: "Monthly leave-future-out forecast skill: forward ΔELPD (MWI + cyclic season minus cyclic season only), refitting on past data only and forecasting the next month with observed weather. Error bars are ±1 SE, clustered by collection period."
 
 lfo_results %>%
   filter(outcome %in% c("n_albo", "n_cx")) %>%
@@ -254,7 +264,7 @@ lfo_results %>%
   ggplot(aes(x = horizon_end, y = delta_elpd)) +
   geom_hline(yintercept = 0, color = "grey55") +
   geom_col(aes(fill = delta_elpd > 0)) +
-  geom_errorbar(aes(ymin = delta_elpd - se_diff, ymax = delta_elpd + se_diff), width = 8, color = "grey30") +
+  geom_errorbar(aes(ymin = delta_elpd - se_diff_cl, ymax = delta_elpd + se_diff_cl), width = 8, color = "grey30") +
   facet_wrap(~ Species, ncol = 1, scales = "free_y") +
   scale_fill_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "#d7301f"), guide = "none") +
   labs(x = "Forecast month (trained on all prior data)", y = "Forward ΔELPD (MWI + season − season only)") +
