@@ -119,7 +119,7 @@ targets::tar_make()
 ## Repository layout
 
 ```
-_targets.R                  pipeline definition (3,471 targets)
+_targets.R                  pipeline definition (3,472 targets)
 R/
   functions.R               data preparation, MWI construction, model fitting, plots
   mwi_pairwise_loo.R        paired LOO and leave-future-out machinery
@@ -166,7 +166,8 @@ Key result targets, readable with `targets::tar_read()`:
 | `index_coef_summary` | MWI/FHFT coefficient across the model grid |
 | `mwi_pairwise_loo_albo` / `_cx` / `_total` | paired LOO, index vs no-index |
 | `mwi_variant_contrasts` | direct contrasts between MWI aggregation variants |
-| `mwi_vs_raw_weather_elpd` | LOO: the index vs raw weather, and vs a seasonal term alone (Supplementary Table S5) |
+| `mwi_vs_raw_weather_elpd` | LOO: the index vs raw weather, and vs a seasonal term alone, as a polynomial and as a cyclic spline (Supplementary Table S5) |
+| `seasonal_term_contrasts` | LOO: the cyclic spline vs the polynomial as the seasonal term, and what adding MWI contributes to each (quoted with Supplementary Table S5) |
 | `lfo_results`, `lfo_noseason`, `lfo_grid_results` | leave-future-out forecasting |
 | `lfo_index_vs_season` | leave-future-out: the index alone vs a seasonal term alone |
 | `hobo_era5_agreement` | logger coverage and agreement with ERA5-Land, per logger and overall (Supplementary Table S3) |
@@ -196,6 +197,13 @@ Key result targets, readable with `targets::tar_read()`:
   zero-inflated negative binomial models of *Ae. albopictus* with raw weather
   terms, and one non-seasonal negative binomial model of *Cx. pipiens*
   (`poly2HTW_AT_mean_NB_cx`). See `convergence_summary`.
+
+## Use of AI tools
+
+Parts of the code in this repository were written, audited and revised with the
+help of AI coding assistants based on large language models. All AI-assisted
+code was reviewed and verified by the authors, who take full responsibility for
+the accuracy and integrity of the data, analyses and results.
 
 ## Licence
 

@@ -1344,39 +1344,52 @@ plot_delta_elpd_heatmap <- function(delta_df, mwi_only = FALSE, high_k_threshold
           panel.grid = element_blank())
 }
 
-#' Monthly leave-future-out forecast-skill bar chart
+#' Monthly leave-future-out bar chart
 #'
 #' Plots per-origin forward ΔELPD (index minus its matched baseline) as monthly
 #' bars, faceted by species. Works for either the seasonal-baseline results from
 #' [run_lfo_monthly()] or the null-baseline results from [run_lfo_monthly_flat()]
-#' (both share the `outcome`, `horizon_end`, `delta_elpd`, `se_diff_cl` columns).
-#' Error bars are +/- 1 SE of the monthly difference, clustered by collection
-#' period.
+#' (both share the `outcome`, `horizon_end`, `delta_elpd` and `se_diff` columns).
+#' Each bar is drawn over the month it scores: the held-out month, which ends on
+#' `horizon_end`. Error bars are +/- 1 SE of the monthly difference, treating
+#' observations as independent (`se_diff`): a month holds only three to five
+#' collection periods, too few to cluster on.
 #'
 #' @param lfo_df Per-origin LFO results tibble.
 #' @param ylab Y-axis label describing the baseline being compared against.
 #' @param species_levels Outcome columns to display (default albo + cx).
 #' @return A `ggplot` object.
 plot_lfo_bars <- function(lfo_df, ylab = "Forward \u0394ELPD", species_levels = c("n_albo", "n_cx")) {
-  lfo_df %>%
+  d <- lfo_df %>%
     dplyr::filter(outcome %in% species_levels) %>%
     dplyr::mutate(
       Species = dplyr::recode(outcome,
                               n_albo = "Ae. albopictus",
                               n_cx = "Cx. pipiens",
                               n_total = "Total"),
-      Species = factor(Species, levels = c("Ae. albopictus", "Cx. pipiens", "Total"))
-    ) %>%
-    ggplot(aes(x = horizon_end, y = delta_elpd)) +
+      Species = factor(Species, levels = c("Ae. albopictus", "Cx. pipiens", "Total")),
+      # The 15th of the held-out month, so that each bar sits over its own month
+      month_mid = as.Date(lubridate::floor_date(horizon_end, "month")) + 14
+    )
+  months <- sort(unique(d$month_mid))
+  # English month abbreviations whatever the locale, with the year under the
+  # first month and under each January
+  month_labels <- month.abb[lubridate::month(months)]
+  with_year <- seq_along(months) == 1 | lubridate::month(months) == 1
+  month_labels[with_year] <- paste0(month_labels[with_year], "\n", lubridate::year(months[with_year]))
+
+  ggplot(d, aes(x = month_mid, y = delta_elpd)) +
     geom_hline(yintercept = 0, color = "grey55") +
-    geom_col(aes(fill = delta_elpd > 0)) +
-    geom_errorbar(aes(ymin = delta_elpd - se_diff_cl, ymax = delta_elpd + se_diff_cl),
+    geom_col(aes(fill = delta_elpd > 0), width = 24) +
+    geom_errorbar(aes(ymin = delta_elpd - se_diff, ymax = delta_elpd + se_diff),
                   width = 8, color = "grey30") +
     facet_wrap(~ Species, ncol = 1, scales = "free_y") +
+    scale_x_date(breaks = months, labels = month_labels) +
     scale_fill_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "#d7301f"), guide = "none") +
-    labs(x = "Forecast month (trained on all prior data)", y = ylab) +
+    labs(x = "Held-out month (models trained on all earlier data)", y = ylab) +
     theme_bw() +
-    theme(strip.text = element_text(face = "italic"))
+    theme(strip.text = element_text(face = "italic"),
+          panel.grid.minor.x = element_blank())
 }
 
 #' Bar chart of the primary MWI leave-one-out improvements

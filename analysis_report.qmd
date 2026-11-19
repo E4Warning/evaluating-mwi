@@ -122,13 +122,13 @@ The wind component of MWI contributes essentially nothing to BG-count prediction
 
 ### MWI is associated with trap counts
 
-@fig-mwi-ce shows the expected BG trap count as a function of MWI for each species, from the primary ZINB model, with trapping effort at its median and trap random intercepts ignored. The two species are stacked as facets sharing a common MWI axis but with independent count scales, since _Ae. albopictus_ reaches much higher counts than _Cx. pipiens_. The relationship is strongly increasing for both species (these curves use `posterior_epred`, so they include the zero-inflation component — i.e. the expected observed count).
+@fig-mwi-ce shows the expected BG trap count as a function of MWI for each species, from the primary ZINB model, with trapping effort at its mean and trap random intercepts ignored. The two species are stacked as facets sharing a common MWI axis but with independent count scales, since _Ae. albopictus_ reaches much higher counts than _Cx. pipiens_. The relationship is strongly increasing for both species (these curves use `posterior_epred`, so they include the zero-inflation component — i.e. the expected observed count).
 
 ```{r}
 #| label: fig-mwi-ce
 #| fig-dpi: 150
 #| message: false
-#| fig-cap: "Expected BG trap count as a function of MWI (24-hour daily maximum), from the primary ZINB model, for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Shaded bands are 90% credible intervals. Trapping effort at its median; trap random intercepts ignored. Note the independent count (y) scales."
+#| fig-cap: "Expected BG trap count as a function of MWI (24-hour daily maximum), from the primary ZINB model, for _Ae. albopictus_ (top) and _Cx. pipiens_ (bottom). Shaded bands are 90% credible intervals. Trapping effort at its mean; trap random intercepts ignored. Note the independent count (y) scales."
 # The article uses this figure and three others below; fig-dpi 150 saves them at
 # 300 dpi (2100 x 1500 px), because Quarto doubles the dpi for HTML figures.
 
@@ -256,19 +256,9 @@ The LOO comparison above is retrospective — every model is trained on the whol
 #| label: fig-mwi-lfo
 #| fig-dpi: 150
 #| message: false
-#| fig-cap: "Monthly leave-future-out forecast skill: forward ΔELPD (MWI + cyclic season minus cyclic season only), refitting on past data only and forecasting the next month with observed weather. Error bars are ±1 SE, clustered by collection period."
+#| fig-cap: "Monthly leave-future-out evaluation: forward ΔELPD (MWI + cyclic season minus cyclic season only) for each held-out month, refitting on earlier data only and scoring the month with its observed weather. Error bars are ±1 SE, treating observations as independent (a month holds only three to five collection periods)."
 
-lfo_results %>%
-  filter(outcome %in% c("n_albo", "n_cx")) %>%
-  mutate(Species = recode(outcome, n_albo = "Ae. albopictus", n_cx = "Cx. pipiens")) %>%
-  ggplot(aes(x = horizon_end, y = delta_elpd)) +
-  geom_hline(yintercept = 0, color = "grey55") +
-  geom_col(aes(fill = delta_elpd > 0)) +
-  geom_errorbar(aes(ymin = delta_elpd - se_diff_cl, ymax = delta_elpd + se_diff_cl), width = 8, color = "grey30") +
-  facet_wrap(~ Species, ncol = 1, scales = "free_y") +
-  scale_fill_manual(values = c(`TRUE` = "#2c7fb8", `FALSE` = "#d7301f"), guide = "none") +
-  labs(x = "Forecast month (trained on all prior data)", y = "Forward ΔELPD (MWI + season − season only)") +
-  theme_bw()
+plot_lfo_bars(lfo_results, ylab = "Forward ΔELPD (MWI + season − season only)")
 ```
 
 ### What this means
@@ -656,14 +646,14 @@ matching the implemented `bf(y ~ x + trapping_effort + (1 | trap_name), zi ~ x)`
 
 The primary results above use a single specification (ZINB, 24-h maximum, no season). The two heatmaps below summarise the same index effect across the *entire* fitted grid — both indices (MWI and FHFT), all three likelihood families (Poisson, negative binomial, ZINB), both aggregation windows and statistics (24 h / albotime / daylight × mean / max), and with and without a seasonal polynomial — for all three outcomes. They let us check that the headline story is not an artefact of the primary specification.
 
-@fig-robust-coef shows the index coefficient itself. Each cell is coloured by the *signed probability of direction*, $\operatorname{sign}(\text{median}) \times \max(P(<0), P(>0))$, so hue encodes the sign of the effect (blue = negative, red = positive) and colour saturation encodes certainty (pale ≈ 0.5, saturated ≈ 1.0). An asterisk marks cells whose 90% credible interval excludes zero. The cell label is the posterior median coefficient on the model's native link scale. The count-component MWI/FHFT coefficient is firmly positive almost everywhere; the zero-inflation coefficient (ZINB only) is firmly negative for _Ae. albopictus_ and consistently negative but weaker for _Cx. pipiens_.
+@fig-robust-coef shows the index coefficient itself. Each cell is coloured by the *signed probability of direction*, $\operatorname{sign}(\text{median}) \times \max(P(<0), P(>0))$, so hue encodes the sign of the effect (blue = positive, red = negative) and colour saturation encodes certainty (pale ≈ 0.5, saturated ≈ 1.0). An asterisk marks cells whose 90% credible interval excludes zero. The cell label is the posterior median coefficient on the model's native link scale. The count-component MWI/FHFT coefficient is firmly positive almost everywhere; the zero-inflation coefficient (ZINB only) is firmly negative for _Ae. albopictus_ and consistently negative but weaker for _Cx. pipiens_.
 
 ```{r}
 #| label: fig-robust-coef
 #| message: false
 #| fig-height: 7
 #| fig-width: 12
-#| fig-cap: "Index (MWI/FHFT) coefficient across the full model grid. Cell fill is the signed probability of direction (blue negative, red positive; saturation = certainty), and an asterisk marks cells whose 90% credible interval excludes zero; the label is the posterior median coefficient on the native link scale (log for count components, logit for the zero-inflation component). Rows are aggregation window / statistic; columns are family and model component; facet rows are species and facet columns are index crossed with seasonality (MWI, MWI + sea, FHFT, FHFT + sea)."
+#| fig-cap: "Index (MWI/FHFT) coefficient across the full model grid. Cell fill is the signed probability of direction (blue positive, red negative; saturation = certainty), and an asterisk marks cells whose 90% credible interval excludes zero; the label is the posterior median coefficient on the native link scale (log for count components, logit for the zero-inflation component). Rows are aggregation window / statistic; columns are family and model component; facet rows are species and facet columns are index crossed with seasonality (MWI, MWI + sea, FHFT, FHFT + sea)."
 
 index_coef_summary <- targets::tar_read(index_coef_summary)
 plot_index_coef_heatmap(index_coef_summary)

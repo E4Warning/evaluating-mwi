@@ -516,6 +516,45 @@ paired_elpd <- function(a, b) {
   )
 }
 
+#' Paired ELPD contrasts involving the two seasonal terms
+#'
+#' The leave-one-out models take a second-degree polynomial in day of year as
+#' their seasonal term; the leave-future-out models take a cyclic spline. This
+#' compares the two on the full data, with the seasonal term as the only
+#' predictor besides trapping effort and trap effects, and reports what adding
+#' the index contributes to each.
+#'
+#' @param polynomial,spline `loo` objects from [loo_checked()] for the models
+#'   with the seasonal term alone.
+#' @param mwi_polynomial,mwi_spline `loo` objects for the same models with the
+#'   index added.
+#' @param outcome Response column name, carried through to the output.
+#' @return A tibble with one row per contrast: the ELPD difference
+#'   (`delta_elpd`), its standard error treating observations as independent
+#'   (`se_diff`) and clustered by collection period (`se_diff_cl`), the number
+#'   of observations (`n_obs`), and the larger of the two models' counts of
+#'   observations still above Pareto k 0.7 after moment matching (`n_high_k`).
+summarize_seasonal_term_contrasts <- function(polynomial, spline, mwi_polynomial, mwi_spline,
+                                              outcome = NA_character_) {
+  contrast <- function(label, a, b) {
+    p <- paired_elpd(a, b)
+    tibble::tibble(
+      outcome = outcome,
+      contrast = label,
+      delta_elpd = p$delta,
+      se_diff = p$se,
+      se_diff_cl = p$se_cl,
+      n_obs = p$n,
+      n_high_k = max(attr(a, "pareto")[["n_high_after"]], attr(b, "pareto")[["n_high_after"]])
+    )
+  }
+  dplyr::bind_rows(
+    contrast("Cyclic spline - polynomial (seasonal term alone)", spline, polynomial),
+    contrast("MWI added to the polynomial seasonal term", mwi_polynomial, polynomial),
+    contrast("MWI added to the cyclic-spline seasonal term", mwi_spline, spline)
+  )
+}
+
 #' PSIS-LOO reliability for a set of models
 #'
 #' @param loos Named list of `loo` objects from [loo_checked()].
