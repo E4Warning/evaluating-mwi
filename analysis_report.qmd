@@ -70,8 +70,8 @@ library(sf)
 library(leaflet)
 library(tidybayes)
 
-source("R/functions.R")
-source("R/mwi_pairwise_loo.R")
+# The pipeline's functions: every file in R/, in name order.
+for (f in sort(list.files("R", pattern = "\\.R$", full.names = TRUE))) source(f)
 
 st_options(plain.ascii = FALSE,       # This is very handy in all Rmd documents
             style = "rmarkdown",        # This too

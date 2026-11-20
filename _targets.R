@@ -4,19 +4,27 @@
 #   https://books.ropensci.org/targets/walkthrough.html#inspect-the-pipeline
 
 # Ensure all pipeline processes use a writable, project-local temp directory.
+# Full path of the folder _targets/tmp inside the project; create it, and stop
+# if it cannot be written to.
 pipeline_tmp_dir <- normalizePath("_targets/tmp", winslash = "/", mustWork = FALSE)
 dir.create(pipeline_tmp_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(pipeline_tmp_dir) || file.access(pipeline_tmp_dir, mode = 2) != 0) {
   stop("Unable to create or write to _targets/tmp. Check disk space and permissions.")
 }
+# Tell R and the programs it starts (Stan's compiler among them) to put their
+# temporary files there.
 Sys.setenv(TMPDIR = pipeline_tmp_dir, TMP = pipeline_tmp_dir, TEMP = pipeline_tmp_dir)
 options(tmpdir = pipeline_tmp_dir)
 
 # Warn early if available disk space is likely too low for Stan compilation.
+# Ask the operating system how much disk space is free on the drive that holds
+# that folder. If the question fails, carry on without the check.
 disk_check <- tryCatch(
   system2("df", c("-Pk", shQuote(pipeline_tmp_dir)), stdout = TRUE, stderr = FALSE),
   error = function(e) character()
 )
+# The answer has a header line and a data line; the fourth field of the data
+# line is the free space in kilobytes. Warn if it is under 10 GiB.
 if (length(disk_check) >= 2) {
   disk_parts <- strsplit(trimws(disk_check[2]), "\\s+")[[1]]
   disk_avail_kb <- suppressWarnings(as.numeric(disk_parts[4]))
@@ -41,6 +49,7 @@ library(tidyverse)
 # machine. Set the MWI_OUTPUT_DIR environment variable to redirect the outputs
 # elsewhere (for example into a manuscript repository); relative paths are
 # interpreted from the project root.
+# Folders for the figures and tables, created if they are not there.
 output_dir <- Sys.getenv("MWI_OUTPUT_DIR", unset = "outputs")
 figure_dir <- file.path(output_dir, "figures")
 table_dir  <- file.path(output_dir, "tables")
@@ -110,9 +119,19 @@ tar_source()
 
 # Seed ####
 # setting seed to make it reproducible 
+# The master seed. targets derives a separate, fixed seed for every target from
+# this number and the target's name, so each model fit can be reproduced
+# exactly.
 tar_option_set(seed = 321)
 
 # Preparing branch info ####
+# The nine weather specifications that use the daily mean. `x` is the weather
+# term of the model formula; every variable in it is the trapping-period mean of
+# a daily summary. `x_name` is the short name used in target names. In order:
+# MWI over the full 24 hours, over the activity-time window (AT, "albotime") and
+# over daylight (DT); relative humidity, temperature and wind speed entered
+# linearly, over the same three windows; and the same three variables as
+# second-degree polynomials.
 xs = tibble(x = c(
   "mean_era5_mwi_mean", 
   "mean_era5_albotime_mwi_mean", 
@@ -126,18 +145,26 @@ xs = tibble(x = c(
   
   ), x_name = c("MWI_mean", "MWI_AT_mean", "MWI_DT_mean", "HTW_mean", "HTW_AT_mean", "HTW_DT_mean", "poly2HTW_mean", "poly2HTW_AT_mean", "poly2HTW_DT_mean"))
 
+# The same nine with a seasonal term added: a second-degree polynomial in day of
+# year.
 xs_sea_days = xs %>% mutate(x = paste0(x, " + poly(sea_day, 2)"), x_name = paste0(x_name, "_sea") )
 
+# 18 specifications so far.
 xs = bind_rows(xs, xs_sea_days)
 
 # Every "_mean" in a specification must become "_max": str_replace() changes
 # only the first, which left the raw-weather "max" models with daily-maximum
 # humidity but daily-mean temperature and wind.
+# The same 18 with the daily maximum in place of the daily mean.
 xs_max = xs %>% mutate(x = str_replace_all(x, pattern = "_mean", "_max"), x_name = str_replace(x_name, pattern = "_mean", "_max"))
+# Stop if any daily-mean variable is left in a "max" specification.
 stopifnot(!any(grepl("_mean", xs_max$x)))
 
+# 36 specifications in all.
 xs = bind_rows(xs, xs_max)
 
+# The 12 MWI specifications once more, with the wind-free index (FHFT) in place
+# of MWI.
 xs_fhft = xs %>%
   filter(str_starts(x_name, "MWI_")) %>%
   mutate(
@@ -148,28 +175,56 @@ xs_fhft = xs %>%
     x_name = str_replace(x_name, "^MWI_", "FHFT_")
   )
 
+# The three count distributions and their short names.
 fams = tibble(family = c("negbinomial", "zero_inflated_negbinomial", "poisson"), fam_name = c("NB", "ZINB", "P"))
 
-fam_xs_combos = expand_grid(family = fams$family, x = xs$x) %>% left_join(fams) %>% left_join(xs) %>% mutate(name = paste(x_name, fam_name, sep="_")) %>% dplyr::select(-c(fam_name, x_name))
+# Every combination of family and weather specification: 3 x 36 = 108 models.
+fam_xs_combos = expand_grid(family = fams$family, x = xs$x) %>%
+  # Attach each family's short name.
+  left_join(fams) %>%
+  # Attach each specification's short name.
+  left_join(xs) %>%
+  # The model's name: specification and family, for example MWI_max_ZINB.
+  mutate(name = paste(x_name, fam_name, sep="_")) %>%
+  # The short names are no longer needed.
+  dplyr::select(-c(fam_name, x_name))
 
-fhft_fam_xs_combos = expand_grid(family = fams$family, x = xs_fhft$x) %>% left_join(fams) %>% left_join(xs_fhft) %>% mutate(name = paste(x_name, fam_name, sep="_")) %>% dplyr::select(-c(fam_name, x_name))
+# The same for the FHFT specifications: 3 x 12 = 36 models.
+fhft_fam_xs_combos = expand_grid(family = fams$family, x = xs_fhft$x) %>%
+  # Attach each family's short name.
+  left_join(fams) %>%
+  # Attach each specification's short name.
+  left_join(xs_fhft) %>%
+  # The model's name, for example FHFT_max_ZINB.
+  mutate(name = paste(x_name, fam_name, sep="_")) %>%
+  # The short names are no longer needed.
+  dplyr::select(-c(fam_name, x_name))
 
+# The 108 models for each outcome: add the outcome's column (Ae. albopictus, Cx.
+# pipiens, or the two pooled) and end the name with the species tag, for example
+# MWI_max_ZINB_albo.
 n_albo_models = fam_xs_combos %>% mutate(y = "n_albo", name = paste0(name, "_albo")) 
 n_cx_models = fam_xs_combos %>% mutate(y = "n_cx", name = paste0(name, "_cx"))  
 n_total_models = fam_xs_combos %>% mutate(y = "n_total", name = paste0(name, "_total")) 
 
+# The same for the 36 FHFT models.
 fhft_albo_models = fhft_fam_xs_combos %>% mutate(y = "n_albo", name = paste0(name, "_albo"))
 fhft_cx_models = fhft_fam_xs_combos %>% mutate(y = "n_cx", name = paste0(name, "_cx"))
 fhft_total_models = fhft_fam_xs_combos %>% mutate(y = "n_total", name = paste0(name, "_total"))
 
+# For every MWI model, its comparison model without MWI (see make_pair_table()).
 mwi_pair_models_albo = make_mwi_pair_table(n_albo_models)
 mwi_pair_models_cx = make_mwi_pair_table(n_cx_models)
 mwi_pair_models_total = make_mwi_pair_table(n_total_models)
 
+# For every FHFT model, its comparison model without FHFT.
 fhft_pair_models_albo = make_fhft_pair_table(fhft_albo_models)
 fhft_pair_models_cx = make_fhft_pair_table(fhft_cx_models)
 fhft_pair_models_total = make_fhft_pair_table(fhft_total_models)
 
+# The distinct index models (36 per outcome) and the distinct comparison models
+# (6 per outcome: with and without the seasonal term, for each family), as
+# tables that tar_map() can run over.
 mwi_full_models_albo = distinct_mwi_full_models(mwi_pair_models_albo)
 mwi_full_models_cx = distinct_mwi_full_models(mwi_pair_models_cx)
 mwi_full_models_total = distinct_mwi_full_models(mwi_pair_models_total)
@@ -199,6 +254,8 @@ lfo_origins = tibble::tibble(
 # 6 window/aggregation x 3 families x 2 seasonality x 3 species = 108 cells. This
 # is expensive (each cell refits models across all 12 monthly origins), so build
 # it selectively, e.g. tar_make(names = tidyselect::starts_with("lfo_cell")).
+# The six versions of MWI (window and daily statistic) and the column that holds
+# each.
 lfo_grid_windows = tibble::tribble(
   ~window, ~aggregation, ~index_term,
   "24h", "max",  "mean_era5_mwi_max",
@@ -208,6 +265,8 @@ lfo_grid_windows = tibble::tribble(
   "DT",  "max",  "mean_era5_daylight_mwi_max",
   "DT",  "mean", "mean_era5_daylight_mwi_mean"
 )
+# Every combination of outcome, family, baseline (FALSE: the null model; TRUE:
+# the seasonal model) and MWI version: 3 x 3 x 2 x 6 = 108 cells.
 lfo_grid_spec = tidyr::expand_grid(
   outcome = c("n_albo", "n_cx", "n_total"),
   family = c("poisson", "negbinomial", "zero_inflated_negbinomial"),
@@ -215,6 +274,7 @@ lfo_grid_spec = tidyr::expand_grid(
   lfo_grid_windows
 ) %>%
   dplyr::mutate(
+    # Name of the cell, for example albo_24h_max_flat_ZINB.
     name = paste(
       sub("^n_", "", outcome),
       window, aggregation,
@@ -226,12 +286,17 @@ lfo_grid_spec = tidyr::expand_grid(
 
 # Targets ####
 # Generate full modeling workflow for Aedes albopictus combinations
+# tar_map() makes one copy of each target below for every row of the table,
+# names it <target>_<name> (for example M_MWI_max_ZINB_albo) and fills in that
+# row's y, x and family.
 model_targets_albo <- tar_map(
   values = n_albo_models,
   names = "name",
   # Fit the BRMS model for the current specification
   tar_target(M, fit_main_models(y=y, x=x, family=family, data = prepared_data)),
   # Compute approximate leave-one-out diagnostics
+  # Leave-one-out cross-validation, with moment matching for observations whose
+  # Pareto k is high (not attempted for the Poisson models).
   tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   # Capture Bayesian R2 summaries
   tar_target(M_BR2, bayes_R2(M)),
@@ -277,6 +342,7 @@ model_targets_total <- tar_map(
 mwi_reduced_targets_albo <- tar_map(
   values = mwi_reduced_models_albo,
   names = "reduced_model",
+  # The model with the MWI term removed, and its leave-one-out result.
   tar_target(M, fit_mwi_reduced_model(y = y, x = x, family = family, data = prepared_data)),
   tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
@@ -299,6 +365,8 @@ mwi_reduced_targets_total <- tar_map(
 fhft_targets_albo <- tar_map(
   values = fhft_full_models_albo,
   names = "full_model",
+  # The model with FHFT as the index, its leave-one-out result and its index
+  # coefficient.
   tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data)),
   tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson")),
   tar_target(M_idxcoef, summarize_index_coef(M, model_name = full_model, outcome = y))
@@ -323,6 +391,7 @@ fhft_targets_total <- tar_map(
 fhft_reduced_targets_albo <- tar_map(
   values = fhft_reduced_models_albo,
   names = "reduced_model",
+  # The model with the FHFT term removed, and its leave-one-out result.
   tar_target(M, fit_fhft_reduced_model(y = y, x = x, family = family, data = prepared_data)),
   tar_target(M_loo, loo_checked(M, prepared_data, moment_match = family != "poisson"))
 )
@@ -345,6 +414,9 @@ fhft_reduced_targets_total <- tar_map(
 mwi_holdout_targets_albo <- tar_map(
   values = mwi_full_models_albo,
   names = "full_holdout_branch",
+  # The model fitted to the 2018 collections only, and its score on the 2019
+  # collections. (These 2018/2019 hold-out results are not used in the article,
+  # which uses the monthly forward test below.)
   tar_target(M, fit_main_models(y = y, x = x, family = family, data = prepared_data_train_2018)),
   tar_target(M_holdout, evaluate_holdout_log_score(M, newdata = prepared_data_test_2019))
 )
@@ -430,6 +502,8 @@ fhft_reduced_holdout_targets_total <- tar_map(
 )
 
 # Collect all fitted Aedes models into a single list
+# tar_combine() gathers targets into one. Here: a list of all fitted Ae.
+# albopictus models.
 model_list_targets_albo <- tar_combine(
   models_albo,
   model_targets_albo[["M"]],
@@ -529,6 +603,8 @@ idxcoef_targets_fhft_total <- tar_combine(
   command = dplyr::bind_rows(!!!.x)
 )
 
+# Lists of the leave-one-out results of the comparison models and of the FHFT
+# models, and of the hold-out scores, one list per outcome.
 mwi_reduced_loo_targets_albo <- tar_combine(
   combined_loos_mwi_reduced_albo,
   mwi_reduced_targets_albo[["M_loo"]],
@@ -678,6 +754,8 @@ lfo_grid_combined <- tar_combine(
 # that convergence can be reported across the whole grid without refitting.
 # Built with tar_target_raw() rather than by adding a target inside the existing
 # tar_map() calls, so that not one existing target command is touched.
+# Names of all models of the grids: the 324 main models, the FHFT models and the
+# comparison models.
 all_fitted_model_names <- unique(c(
   n_albo_models$name, n_cx_models$name, n_total_models$name,
   fhft_full_models_albo$full_model, fhft_full_models_cx$full_model, fhft_full_models_total$full_model,
@@ -685,6 +763,9 @@ all_fitted_model_names <- unique(c(
   fhft_reduced_models_albo$reduced_model, fhft_reduced_models_cx$reduced_model, fhft_reduced_models_total$reduced_model
 ))
 
+# One target per fitted model, named Mconv_<model>, that runs
+# summarize_model_convergence() on it. substitute() writes the model's own
+# target name into the command.
 convergence_targets <- lapply(all_fitted_model_names, function(this_name) {
   tar_target_raw(
     name = paste0("Mconv_", this_name),
@@ -695,6 +776,7 @@ convergence_targets <- lapply(all_fitted_model_names, function(this_name) {
   )
 })
 
+# All of them in one table.
 convergence_combined <- tar_combine(
   convergence_summary,
   convergence_targets,
@@ -710,6 +792,7 @@ convergence_combined <- tar_combine(
 #     and only then aggregated. These refit it with MWI computed from the daily
 #     maxima of each Helix station variable, i.e. with the two aggregation steps
 #     in the opposite order.
+# The three outcomes and their name tags.
 sensitivity_outcomes <- tibble::tibble(
   outcome = c("n_albo", "n_cx", "n_total"),
   suffix  = c("albo", "cx", "total")
@@ -731,11 +814,15 @@ effort_sensitivity_targets <- tar_map(
 helix_sensitivity_targets <- tar_map(
   values = sensitivity_outcomes,
   names = "suffix",
+  # The primary model with the Helix index (computed from daily weather
+  # summaries) in place of the ERA5-Land index, its leave-one-out result and its
+  # summary row.
   tar_target(M_helix, fit_main_models(y = outcome, x = "mean_mwi_max_helix", family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_helix_loo, loo_checked(M_helix, prepared_data)),
   tar_target(M_helix_summary, summarize_spec_comparison(M_helix, M_helix_loo, label = "Helix daily MWI", outcome = outcome))
 )
 
+# Tables that stack the summary rows.
 effort_sensitivity_combined <- tar_combine(
   effort_sensitivity_summary,
   effort_sensitivity_targets[["M_effort_log_summary"]],
@@ -756,20 +843,27 @@ helix_sensitivity_combined <- tar_combine(
 # differences between the MWI models themselves. These targets compute that
 # comparison directly, which also yields the paired standard error. Read-only
 # with respect to the existing loo targets, so nothing is invalidated.
+# Name stems of the six MWI variants, labelled by window and daily statistic.
 mwi_variant_stems <- c(
   "24h_max"  = "MWI_max",    "24h_mean" = "MWI_mean",
   "AT_max"   = "MWI_AT_max", "AT_mean"  = "MWI_AT_mean",
   "DT_max"   = "MWI_DT_max", "DT_mean"  = "MWI_DT_mean"
 )
 
+# For each species, and for the NB and ZINB families, one target that hands the
+# six leave-one-out results to summarize_mwi_variant_contrasts().
 mwi_variant_contrast_targets <- unlist(
   lapply(c("albo", "cx", "total"), function(this_sp) {
     lapply(c("NB", "ZINB"), function(this_fam) {
+      # The names of the six leave-one-out targets, as symbols.
       loo_syms <- lapply(mwi_variant_stems, function(stem) {
         as.symbol(sprintf("M_loo_%s_%s_%s", stem, this_fam, this_sp))
       })
+      # A call that builds a named list of those six targets: list(`24h_max` =
+      # M_loo_MWI_max_NB_albo, ...).
       loo_call <- as.call(c(list(as.symbol("list")),
                             setNames(loo_syms, names(mwi_variant_stems))))
+      # The target itself, with that call written into its command.
       tar_target_raw(
         name = sprintf("mwi_variant_contrasts_%s_%s", this_fam, this_sp),
         command = substitute(
@@ -782,6 +876,7 @@ mwi_variant_contrast_targets <- unlist(
   recursive = FALSE
 )
 
+# All contrasts in one table.
 mwi_variant_contrasts_combined <- tar_combine(
   mwi_variant_contrasts,
   mwi_variant_contrast_targets,
@@ -794,15 +889,22 @@ mwi_variant_contrasts_combined <- tar_combine(
 # logger-complete subset only, with wind excluded from both sources (the loggers
 # do not measure it) and an intercept-only zero-inflation throughout, so the
 # only thing varying across cells is the count-component weather term.
+# Columns that hold the trapping-period mean of the daily maximum (or daily
+# mean) temperature and relative humidity, from ERA5-Land and from the loggers.
 raw_t <- c(era5_max = "mean_era5_temp_c_max",  hobo_max = "mean_hobo_temp_c_max",
            era5_mean = "mean_era5_temp_c_mean", hobo_mean = "mean_hobo_temp_c_mean")
 raw_h <- c(era5_max = "mean_era5_relative_humidity_max",  hobo_max = "mean_hobo_RH_perc_max",
            era5_mean = "mean_era5_relative_humidity_mean", hobo_mean = "mean_hobo_RH_perc_mean")
 
+# Three ways of entering temperature and humidity from one source: linearly, as
+# second-degree polynomials, or as smooth terms.
 rw_lin <- function(s) paste(raw_t[[s]], "+", raw_h[[s]])
 rw_pol <- function(s) sprintf("poly(%s, 2) + poly(%s, 2)", raw_t[[s]], raw_h[[s]])
 rw_spl <- function(s) sprintf("s(%s, k = 5) + s(%s, k = 5)", raw_t[[s]], raw_h[[s]])
 
+# The twelve specifications: the null model, the index from each source, and the
+# raw variables from each source in several forms. `x` is the weather term of
+# the count model.
 raw_weather_cells <- tibble::tribble(
   ~key,        ~spec,                       ~source, ~form,    ~stat,  ~x,
   "null",      "Null (effort only)",        "none",  "none",   "-",    "",
@@ -820,6 +922,7 @@ raw_weather_cells <- tibble::tribble(
     paste(rw_pol("era5_max"), rw_pol("hobo_max"), sep = " + ")
 )
 
+# Cross them with the two species and name each fit, for example albo_mwi_hobo.
 raw_weather_spec <- tidyr::expand_grid(
   tibble::tibble(outcome = c("n_albo", "n_cx"), tag = c("albo", "cx")),
   raw_weather_cells
@@ -830,6 +933,9 @@ raw_weather_spec <- tidyr::expand_grid(
 raw_weather_targets <- tar_map(
   values = raw_weather_spec,
   names = "spec_name",
+  # A zero-inflated negative binomial model with the weather term in the count
+  # part only, fitted to the trap-periods that have logger data; then its
+  # leave-one-out result and a summary row.
   tar_target(M_rw, fit_count_only_model(y = outcome, x = x, data = hobo_subset_data)),
   tar_target(M_rw_loo, loo_checked(M_rw, hobo_subset_data)),
   tar_target(
@@ -839,6 +945,7 @@ raw_weather_targets <- tar_map(
   )
 )
 
+# All summary rows in one table.
 raw_weather_combined <- tar_combine(
   raw_weather_fits,
   raw_weather_targets[["M_rw_summary"]],
@@ -851,11 +958,14 @@ raw_weather_combined <- tar_combine(
 # already summarised to the day (daily maximum, mean or minimum of each
 # variable), against the hourly-then-aggregated index. Source and grid cell are
 # held fixed, so the only difference is the order of operations.
+# One model per outcome and daily summary (maximum, mean or minimum of each
+# weather variable, converted to the index afterwards).
 aggfirst_spec <- tidyr::expand_grid(
   outcome = c("n_albo", "n_cx", "n_total"),
   stat = c("max", "mean", "min")
 ) %>%
   dplyr::mutate(
+    # Name tag, the column that holds the index, and a label for the tables.
     suffix = paste(sub("^n_", "", outcome), stat, sep = "_"),
     x = paste0("mean_era5_aggfirst_mwi_", stat),
     label = paste0("ERA5-Land daily ", stat, " weather, then indexed")
@@ -863,6 +973,8 @@ aggfirst_spec <- tidyr::expand_grid(
 aggfirst_targets <- tar_map(
   values = aggfirst_spec,
   names = "suffix",
+  # The primary model with that index in place of the hourly one, its
+  # leave-one-out result and its summary row.
   tar_target(M_aggfirst, fit_main_models(y = outcome, x = x, family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_aggfirst_loo, loo_checked(M_aggfirst, prepared_data)),
   tar_target(M_aggfirst_summary, summarize_spec_comparison(M_aggfirst, M_aggfirst_loo, label = label, outcome = outcome))
@@ -878,6 +990,8 @@ aggfirst_combined <- tar_combine(
 prior_sensitivity_targets <- tar_map(
   values = sensitivity_outcomes,
   names = "suffix",
+  # The primary model with the weakly informative prior, its leave-one-out
+  # result and its summary row.
   tar_target(M_prior, fit_main_models(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = prepared_data, prior = mwi_coefficient_prior("mean_era5_mwi_max"))),
   tar_target(M_prior_loo, loo_checked(M_prior, prepared_data)),
   tar_target(M_prior_summary, summarize_spec_comparison(M_prior, M_prior_loo, label = "normal(0, 5) prior on MWI coefficients", outcome = outcome))
@@ -890,6 +1004,9 @@ prior_sensitivity_combined <- tar_combine(
 
 # Logger versus reanalysis index (Supplementary Table S6) on the trap-periods
 # with logger coverage, with and without the 80% coverage screen.
+# Two species times two versions of the data (with and without the 80% coverage
+# screen). The data set is given as a symbol so that each target reads the right
+# one.
 hobo_mwi_spec <- tidyr::expand_grid(
   tibble::tibble(outcome = c("n_albo", "n_cx"), tag = c("albo", "cx")),
   tibble::tibble(
@@ -901,12 +1018,17 @@ hobo_mwi_spec <- tidyr::expand_grid(
 hobo_mwi_targets <- tar_map(
   values = hobo_mwi_spec,
   names = "suffix",
+  # On the trap-periods with logger data: the null model (trapping effort only;
+  # the function removes the MWI term), the model with the ERA5-Land index and
+  # the model with the logger index.
   tar_target(M_hobo_null, fit_mwi_reduced_model(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
   tar_target(M_hobo_era5, fit_main_models(y = outcome, x = "mean_era5_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
   tar_target(M_hobo_mwi, fit_main_models(y = outcome, x = "mean_hobo_mwi_max", family = "zero_inflated_negbinomial", data = hobo_data)),
+  # Their leave-one-out results.
   tar_target(M_hobo_null_loo, loo_checked(M_hobo_null, hobo_data)),
   tar_target(M_hobo_era5_loo, loo_checked(M_hobo_era5, hobo_data)),
   tar_target(M_hobo_mwi_loo, loo_checked(M_hobo_mwi, hobo_data)),
+  # The comparison of the three.
   tar_target(M_hobo_summary, summarize_hobo_mwi_comparison(M_hobo_null_loo, M_hobo_era5_loo, M_hobo_mwi_loo, M_hobo_era5, M_hobo_mwi, outcome = outcome, screen = screen))
 )
 hobo_mwi_combined <- tar_combine(
@@ -918,6 +1040,7 @@ hobo_mwi_combined <- tar_combine(
 # Convergence of every model fitted outside the main grid (the grid and its
 # reduced models are covered by convergence_summary; the leave-future-out
 # refits record their diagnostics in their own results).
+# Names of every model fitted outside the main grids.
 extra_fit_names <- c(
   paste0(rep(c("M_effort_log_", "M_effort_offset_", "M_helix_", "M_prior_"), each = 3), sensitivity_outcomes$suffix),
   paste0("M_aggfirst_", aggfirst_spec$suffix),
@@ -925,6 +1048,7 @@ extra_fit_names <- c(
   paste0("M_rw_", raw_weather_spec$spec_name),
   paste0(rep(c("M_hobo_null_", "M_hobo_era5_", "M_hobo_mwi_"), each = nrow(hobo_mwi_spec)), hobo_mwi_spec$suffix)
 )
+# One convergence-summary target per such model.
 convergence_extra_targets <- lapply(extra_fit_names, function(this_name) {
   tar_target_raw(
     name = paste0("conv_", this_name),
@@ -962,6 +1086,7 @@ list(
   # Reference to the Helix weather station CSV
   tar_target(file_helix_data, "data/raw/weather_helix/athens.csv", format = "file"),
   # Load raw trap collections
+  # The trap counts: one row per trap and trapping period.
   tar_target(trap_data, load_trap_data(file = file_trap_data)),  
   # Load trap location metadata
   tar_target(trap_location_data, load_trap_location_data(file = file_trap_data)),
@@ -987,6 +1112,8 @@ list(
   tar_target(prepared_data, prepare_data(trap_data, weather_inputs)),
   tar_target(prepared_data_hobo_unscreened, prepare_data(trap_data, weather_inputs, hobo_min_coverage = 0)),
   # Split prepared data for temporal holdout validation
+  # The 2018 and the 2019 collections separately (for the hold-out analysis,
+  # which the article does not use).
   tar_target(prepared_data_train_2018, prepared_data %>% filter(year == 2018)),
   tar_target(prepared_data_test_2019, prepared_data %>% filter(year == 2019)),
   # Run albopictus model grid
@@ -1134,6 +1261,9 @@ list(
   # years. Existing targets are untouched and stay valid. Build selectively, e.g.
   #   tar_make(names = tidyselect::starts_with("M_cyc"))
   #   tar_make(names = "temporal_elpd_cyc")
+  # The primary specification with a cyclic spline in day of year as the
+  # seasonal term: the seasonal term alone, with MWI added, and with FHFT added,
+  # for each outcome; then their leave-one-out results.
   tar_target(M_cyc_season_albo,  fit_main_models_cyclic_season(y = "n_albo",  family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_cyc_season_cx,    fit_main_models_cyclic_season(y = "n_cx",    family = "zero_inflated_negbinomial", data = prepared_data)),
   tar_target(M_cyc_season_total, fit_main_models_cyclic_season(y = "n_total", family = "zero_inflated_negbinomial", data = prepared_data)),
@@ -1168,6 +1298,8 @@ list(
   # Each target refits on an expanding past-only window and forecasts the next
   # month (perfect weather assumed). Long-running (compiles once per model, then
   # update() per origin). Build per outcome, e.g. tar_make(names = "lfo_results_albo").
+  # The forward (leave-future-out) test with the seasonal baseline, for each
+  # outcome: MWI plus the seasonal spline against the seasonal spline alone.
   tar_target(lfo_results_albo,  run_lfo_monthly("n_albo",  "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_results_cx,    run_lfo_monthly("n_cx",    "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_results_total, run_lfo_monthly("n_total", "mean_era5_mwi_max", prepared_data, lfo_origins)),
@@ -1181,6 +1313,8 @@ list(
   # ---- Non-seasonal LFO forecast (MWI vs null: trapping effort + trap RE only) --
   # Companion to lfo_results above; here the baseline has NO seasonality term, so
   # positive bars show the raw forecasting value of MWI over an intercept model.
+  # The forward test with the null baseline, for the two species: MWI against
+  # trapping effort and trap effects only.
   tar_target(lfo_noseason_albo, run_lfo_monthly_flat("n_albo", "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_noseason_cx,   run_lfo_monthly_flat("n_cx",   "mean_era5_mwi_max", prepared_data, lfo_origins)),
   tar_target(lfo_noseason,      dplyr::bind_rows(lfo_noseason_albo, lfo_noseason_cx)),
@@ -1194,6 +1328,7 @@ list(
   # ---- MCMC convergence across every fitted model (no refitting) --------------
   convergence_targets,
   convergence_combined,
+  # The convergence figures quoted in the article.
   tar_target(convergence_overall, summarize_convergence_overall(convergence_summary)),
   # ---- Trapping-effort sensitivity: linear (primary) vs log covariate vs offset
   effort_sensitivity_targets,
@@ -1204,6 +1339,7 @@ list(
     summarize_spec_comparison(M_MWI_max_ZINB_cx,    M_loo_MWI_max_ZINB_cx,    label = "linear effort (primary)", outcome = "n_cx"),
     summarize_spec_comparison(M_MWI_max_ZINB_total, M_loo_MWI_max_ZINB_total, label = "linear effort (primary)", outcome = "n_total")
   )),
+  # The table: primary rows and the two effort variants, sorted.
   tar_target(effort_sensitivity_table, dplyr::arrange(
     dplyr::bind_rows(effort_primary_summary, effort_sensitivity_summary), outcome, spec
   )),
@@ -1216,6 +1352,7 @@ list(
   # ---- Helix-daily MWI: index built from already-daily weather ----------------
   helix_sensitivity_targets,
   helix_sensitivity_combined,
+  # The table: primary rows and the Helix rows, sorted.
   tar_target(helix_vs_era5_table, dplyr::arrange(
     dplyr::bind_rows(effort_primary_summary, helix_sensitivity_summary), outcome, spec
   )),
@@ -1231,13 +1368,18 @@ list(
   mwi_variant_contrast_targets,
   mwi_variant_contrasts_combined,
   # ---- HOBO vs ERA5 using raw weather rather than the index --------------------
+  # The trap-periods that have a logger-based index (after the 80% coverage
+  # screen).
   tar_target(hobo_subset_data, dplyr::filter(prepared_data, !is.na(mean_hobo_mwi_max))),
   raw_weather_targets,
   raw_weather_combined,
+  # Paired contrasts among the raw-weather fits (Supplementary Table S9).
   tar_target(raw_weather_contrasts, compare_raw_weather_specs(raw_weather_fits)),
   # ---- Revision analyses ----------------------------------------------------
   aggfirst_targets,
   aggfirst_combined,
+  # Supplementary Table S8: each index built from daily summaries, and the null
+  # model, against the hourly index.
   tar_target(order_of_operations_elpd, dplyr::bind_rows(
     compare_elpd_to_reference(list(`ERA5-Land hourly MWI` = M_loo_MWI_max_ZINB_albo, `ERA5-Land daily max, then indexed` = M_aggfirst_loo_albo_max, `ERA5-Land daily mean, then indexed` = M_aggfirst_loo_albo_mean, `ERA5-Land daily min, then indexed` = M_aggfirst_loo_albo_min, `Helix daily, then indexed` = M_helix_loo_albo, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_albo), reference = "ERA5-Land hourly MWI", outcome = "n_albo"),
     compare_elpd_to_reference(list(`ERA5-Land hourly MWI` = M_loo_MWI_max_ZINB_cx, `ERA5-Land daily max, then indexed` = M_aggfirst_loo_cx_max, `ERA5-Land daily mean, then indexed` = M_aggfirst_loo_cx_mean, `ERA5-Land daily min, then indexed` = M_aggfirst_loo_cx_min, `Helix daily, then indexed` = M_helix_loo_cx, `Null (effort only)` = M_loo_noMWI_base_zero_inflated_negbinomial_n_cx), reference = "ERA5-Land hourly MWI", outcome = "n_cx"),
@@ -1245,12 +1387,16 @@ list(
   )),
   prior_sensitivity_targets,
   prior_sensitivity_combined,
+  # The prior sensitivity table and the paired ELPD difference from the primary
+  # model.
   tar_target(prior_sensitivity_table, dplyr::arrange(dplyr::bind_rows(effort_primary_summary, prior_sensitivity_summary), outcome, spec)),
   tar_target(prior_sensitivity_elpd, dplyr::bind_rows(
     compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_albo, `normal(0, 5) on MWI` = M_prior_loo_albo), reference = "flat (primary)", outcome = "n_albo"),
     compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_cx, `normal(0, 5) on MWI` = M_prior_loo_cx), reference = "flat (primary)", outcome = "n_cx"),
     compare_elpd_to_reference(list(`flat (primary)` = M_loo_MWI_max_ZINB_total, `normal(0, 5) on MWI` = M_prior_loo_total), reference = "flat (primary)", outcome = "n_total")
   )),
+  # The trap-periods that have a logger-based index when the coverage screen is
+  # switched off.
   tar_target(hobo_subset_data_unscreened, dplyr::filter(prepared_data_hobo_unscreened, !is.na(mean_hobo_mwi_max))),
   hobo_mwi_targets,
   hobo_mwi_combined,
@@ -1269,6 +1415,7 @@ list(
     summarize_seasonal_term_contrasts(polynomial = M_loo_noMWI_sea_zero_inflated_negbinomial_n_cx, spline = M_cyc_season_cx_loo, mwi_polynomial = M_loo_MWI_max_sea_ZINB_cx, mwi_spline = M_cyc_MWI_cx_loo, outcome = "n_cx"),
     summarize_seasonal_term_contrasts(polynomial = M_loo_noMWI_sea_zero_inflated_negbinomial_n_total, spline = M_cyc_season_total_loo, mwi_polynomial = M_loo_MWI_max_sea_ZINB_total, mwi_spline = M_cyc_MWI_total_loo, outcome = "n_total")
   )),
+  # Pareto k summary of every leave-one-out result of the grids.
   tar_target(loo_reliability, summarize_loo_reliability(c(combined_loos_albo, combined_loos_cx, combined_loos_total, combined_loos_mwi_reduced_albo, combined_loos_mwi_reduced_cx, combined_loos_mwi_reduced_total, combined_loos_fhft_albo, combined_loos_fhft_cx, combined_loos_fhft_total, combined_loos_fhft_reduced_albo, combined_loos_fhft_reduced_cx, combined_loos_fhft_reduced_total))),
   convergence_extra_targets,
   convergence_extra_combined,

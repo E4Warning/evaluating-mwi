@@ -17,6 +17,13 @@
 #     overlap (10 May to 10 October 2019 at BG_2, BG_4 and BG_5); each reading
 #     now appears once.
 #
+# Version 1.1.1 corrects one further error, present in 1.0.0 and 1.1.0:
+#   * HOBO timestamps during summer time, from 31 March 2019 onwards. The
+#     loggers' Excel exports show the UTC+3 clock with an hour added for
+#     daylight saving, which had been left in, so those readings were one hour
+#     late. Six readings taken in the hour that these exports show twice on
+#     27 October 2019, which had been dropped as duplicates, are restored.
+#
 # It builds and validates the package but does NOT deposit anything. The
 # zen4R deposit is defined as a guarded function (deposit_datapackage()) that
 # is not called by default. Nothing becomes public until co-authors approve.
@@ -39,7 +46,8 @@ trap_file <- file.path(raw_dir, "Moschato_Tavros_bg_2018_2019.xlsx")
 
 # Minimum physically plausible relative humidity (percent) for the HOBO
 # sensors; readings below this are stuck-sensor artefacts and set to NA.
-# Kept identical to R/functions.R so the published data matches the analysis.
+# Kept identical to R/02_data_preparation.R so the published data matches the
+# analysis.
 hobo_rh_min_valid <- 10
 
 # Traps that carried an on-site HOBO temperature/humidity logger.
@@ -136,6 +144,28 @@ hobo_files <- tibble::tribble(
 # instants, and written out in Europe/Athens local time with the offset shown.
 hobo_logger_tz <- "Etc/GMT-3"
 
+# The Excel exports show that clock with an hour added during summer time (the
+# stamps jump from 02:30 to 04:00 on the last Sunday of March and repeat 03:00
+# and 03:30 on the last Sunday of October). This returns the instants, with the
+# added hour removed. Kept identical to hobo_xlsx_time() in
+# R/02_data_preparation.R, where the evidence is set out.
+hobo_xlsx_instant <- function(x) {
+  stamp <- as.numeric(x)
+  day <- as.Date(as.POSIXct(stamp, origin = "1970-01-01", tz = "UTC"))
+  stamp_year <- as.integer(format(day, "%Y"))
+  stamp_year[is.na(stamp_year)] <- 2000L
+  last_sunday <- function(y, month) {
+    d <- as.Date(sprintf("%d-%02d-31", y, month))
+    d - as.POSIXlt(d)$wday
+  }
+  summer_starts <- as.numeric(as.POSIXct(paste(last_sunday(stamp_year, 3), "04:00:00"), tz = "UTC"))
+  summer_ends <- as.numeric(as.POSIXct(paste(last_sunday(stamp_year, 10), "04:00:00"), tz = "UTC"))
+  seen <- cummax(c(-Inf, head(replace(stamp, is.na(stamp), -Inf), -1)))
+  second_pass <- !is.na(stamp) & stamp <= seen & day == last_sunday(stamp_year, 10)
+  summer <- !is.na(stamp) & stamp >= summer_starts & stamp < summer_ends & !second_pass
+  as.POSIXct(stamp - 3 * 3600 - 3600 * summer, origin = "1970-01-01", tz = "UTC")
+}
+
 read_one_hobo <- function(file, fmt, trap_id) {
   path <- file.path(raw_dir, file)
   if (fmt == "csv") {
@@ -150,9 +180,9 @@ read_one_hobo <- function(file, fmt, trap_id) {
     d <- read_excel(path, skip = 1)
     d <- d[, 2:4]
     names(d) <- c("date_time", "temp_c", "RH_perc")
-    # read_excel returns the logger's clock time labelled as UTC; relabel it
-    # with the logger's actual zone (no shift of the clock reading).
-    d$date_time <- force_tz(as_datetime(d$date_time), hobo_logger_tz)
+    # read_excel returns the file's time stamps labelled as UTC; turn them
+    # into instants, removing the hour the export added in summer time.
+    d$date_time <- hobo_xlsx_instant(as_datetime(d$date_time))
   }
   d$trap_id <- trap_id
   d
@@ -173,7 +203,8 @@ read_hobo <- function() {
     mutate(
       temp_c = as.numeric(temp_c),
       RH_perc = as.numeric(RH_perc),
-      # Apply the validated stuck-sensor correction (identical to functions.R).
+      # Apply the validated stuck-sensor correction (identical to
+      # R/02_data_preparation.R).
       RH_perc = if_else(RH_perc < hobo_rh_min_valid, NA_real_, RH_perc),
       datetime = iso_offset(date_time)
     ) %>%
@@ -258,7 +289,7 @@ pkg <- create_package() %>%
 
 # Package-level metadata
 pkg$name <- "mosquitoweather-athens"
-pkg$version <- "1.1.0"
+pkg$version <- "1.1.1"
 pkg$title <- "Mosquito trap counts and microclimate from Moschato-Tavros, Athens (2018-2020)"
 pkg$description <- paste(
   "Weekly BG-Sentinel trap counts of adult female Aedes albopictus and Culex",
@@ -273,7 +304,11 @@ pkg$description <- paste(
   "counts at BG_5_M_2 for 26 April to 24 October 2019, which had been copied",
   "from BG_6_T_4 at data entry; HOBO timestamps during winter time, which were",
   "one hour late; and 22,048 duplicated HOBO readings from overlapping logger",
-  "exports."
+  "exports. Version 1.1.1 corrects one further error, present in versions 1.0.0",
+  "and 1.1.0: HOBO timestamps during summer time from 31 March 2019 onwards",
+  "were one hour late, because the loggers' spreadsheet exports add an hour",
+  "for daylight saving to the loggers' fixed UTC+3 clock; six readings from the",
+  "hour those exports show twice on 27 October 2019 are restored."
 )
 pkg$keywords <- list("mosquito surveillance", "Aedes albopictus", "Culex pipiens",
                      "microclimate", "BG-Sentinel", "Athens", "Greece",

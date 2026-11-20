@@ -2,7 +2,7 @@
 #
 # STANDALONE VERSION of the raw-weather comparison. The pipeline runs the same
 # analysis as the targets raw_weather_fits and raw_weather_contrasts (see
-# R/convergence_and_sensitivity.R), and that is the version the article
+# R/03_model_fitting.R and R/05_leave_one_out.R), and that is the version the article
 # reports. This script is kept because it runs on its own, from prepared_data.
 #
 # Question: the paper shows that MWI computed from the on-site HOBO loggers

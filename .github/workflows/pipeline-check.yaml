@@ -50,7 +50,13 @@ jobs:
             any::tmap
             any::sessioninfo
             any::R.utils
+            any::testthat
             E4Warning/mwi
+
+      # Arithmetic and bookkeeping the results rest on, checked on small inputs
+      # with answers worked out by hand (tests/testthat). No model is fitted.
+      - name: Unit tests of the pipeline's functions
+        run: Rscript tests/testthat.R
 
       - name: Pipeline parses into the full target graph
         run: |

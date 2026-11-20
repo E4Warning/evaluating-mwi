@@ -22,7 +22,7 @@ data/raw/traps/ ──(a999_build_datapackage.R)──► data/pub/  [the Zenodo
 | Path | Source | Contents |
 |---|---|---|
 | `traps/Moschato_Tavros_bg_2018_2019.xlsx` | Benaki Phytopathological Institute | Weekly BG-Sentinel 2 collections, six traps, Jul 2018 – Oct 2019, with trap coordinates in the `trap_info` sheet (corrected October 2026; see below) |
-| `traps/BG_{2,3,4,5}_{a,b,c}_hobo_*.{csv,xlsx}` | Benaki Phytopathological Institute | HOBO Pro v2 logger readings at 30-minute resolution, four instrumented traps, three exports each. Timestamps are on a fixed UTC+3 clock (no daylight saving). Dates in the file names are month-day-year, so the `c` exports start on 10 May 2019 and overlap the `b` exports until 10 October 2019 |
+| `traps/BG_{2,3,4,5}_{a,b,c}_hobo_*.{csv,xlsx}` | Benaki Phytopathological Institute | HOBO Pro v2 logger readings at 30-minute resolution, four instrumented traps, three exports each. The loggers keep a fixed UTC+3 clock (no daylight saving); the CSV exports show it as it is, and the Excel exports show it with an hour added during summer time. Dates in the file names are month-day-year, so the `c` exports start on 10 May 2019 and overlap the `b` exports until 10 October 2019 |
 | `weather/*.txt` | National Observatory of Athens | Daily station summaries, one file per month |
 | `weather_helix/athens.csv` | Hellenic Data Service (dataset `66e1c19a-7b0e-456f-b465-b301a1130e3f`) | Daily Athens station series (the "Helix-daily" source in the article) |
 
@@ -33,7 +33,8 @@ the citable version of these data. It is built by `scripts/a999_build_datapackag
 ### Corrections
 
 The trap workbook and the data release were corrected in October 2026 (data
-release version 1.1.0):
+release version 1.1.0), and the logger timestamps again in November 2026 (data
+release version 1.1.1):
 
 - **Trap counts.** The *Ae. albopictus* counts at BG_5_M_2 for the 25
   collections from 26 April to 24 October 2019 had been copied from BG_6_T_4 at
@@ -43,7 +44,12 @@ release version 1.1.0):
 - **Logger timestamps.** The loggers keep a fixed UTC+3 clock. Earlier code read
   some exports as Europe/Athens local time (one hour late in winter) and others
   as UTC (three hours late), and data release 1.0.0 put winter readings one
-  hour late. The pipeline and the data release now read every export as UTC+3.
+  hour late. The Excel exports also carry an extra hour during summer time
+  (their stamps jump from 02:30 to 04:00 on 31 March 2019 and repeat 03:00 and
+  03:30 on 27 October 2019), which code up to 20 November 2026 and data
+  releases 1.0.0 and 1.1.0 left in, putting those readings one hour late. The
+  pipeline and data release 1.1.1 read the CSV exports as UTC+3 and remove the
+  added hour from the Excel exports.
 - **Duplicated logger readings.** The overlapping `b` and `c` exports put
   22,048 readings in twice. Each now appears once.
 

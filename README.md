@@ -120,13 +120,26 @@ targets::tar_make()
 
 ```
 _targets.R                  pipeline definition (3,472 targets)
-R/
-  functions.R               data preparation, MWI construction, model fitting, plots
-  mwi_pairwise_loo.R        paired LOO and leave-future-out machinery
-  convergence_and_sensitivity.R
-                            MCMC diagnostics; trapping-effort, Helix and
-                            raw-weather sensitivity analyses
-  hobo_era5_timeseries.R    ERA5 vs on-site logger time-series figure
+R/                          the pipeline's functions, in the order it uses them
+  01_index_and_units.R      thin wrappers around the mwi package
+  02_data_preparation.R     trap counts, every weather source, the hourly index
+                            and its summaries; the table the models are fitted to
+  03_model_fitting.R        every function that calls brms
+  04_model_pairs.R          which model is compared with which
+  05_leave_one_out.R        PSIS-LOO with moment matching, clustered standard
+                            errors, and the comparisons built on them
+  06_forward_validation.R   monthly leave-future-out analysis
+  07_coefficients_and_effects.R
+                            coefficient summaries (Fig. 2, Table S4)
+  08_convergence.R          R-hat, effective sample size, divergences
+  09_loggers_vs_era5.R      on-site loggers against ERA5-Land (Table S3,
+                            Figs. S1 and S2)
+  10_figures.R              plotting functions
+  11_report_figures_and_tables.R
+                            copies report figures, writes the tables as CSV
+tests/                      unit tests of those functions on small inputs with
+                            answers worked out by hand; no model is fitted.
+                            Run with: Rscript tests/testthat.R
 analysis_report.qmd         exploratory Quarto report; also renders four of the
                             article figures, which the pipeline copies into
                             outputs/figures
@@ -180,7 +193,7 @@ Key result targets, readable with `targets::tar_read()`:
 
 - **The MWI computation lives in the [`mwi`](https://github.com/E4Warning/mwi)
   package.** `make_FT()`, `make_FH()`, `make_FW()` and the other helpers in
-  `R/functions.R` are thin wrappers that delegate to it, retained so the names
+  `R/01_index_and_units.R` are thin wrappers that delegate to it, retained so the names
   used throughout the pipeline keep working. The package's test suite includes
   314 hourly observations from this study with the index values this pipeline
   produced, so the two cannot silently drift apart.
